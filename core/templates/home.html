@@ -3,7 +3,7 @@
 <div class="flex flex-col items-center">
     <!-- Search Bar -->
     <div class="w-full max-w-2xl relative">
-        <input type="text" id="search-input" name="q" placeholder="Search NSE/BSE symbol or company name..."
+        <input type="text" id="search-input" name="q" placeholder="Search NSE symbol or company name..."
                autocomplete="off"
                class="w-full px-5 py-3 border border-gray-300 dark:border-gray-600 rounded-full bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-lg text-lg"
                hx-get="/search/"
@@ -16,6 +16,16 @@
         </div>
 
         <div id="search-results" class="absolute z-10 w-full mt-1"></div>
+    </div>
+
+        <!-- Top Intraday Picks Section -->
+    <div id="top-picks-section" class="w-full mt-10">
+        <h2 class="text-2xl font-bold text-center mb-6">🔥 Today's Top Intraday Picks</h2>
+        <div id="top-picks" hx-get="/picks/" hx-trigger="load delay:100ms" hx-indicator="#picks-spinner">
+            <div id="picks-spinner" class="htmx-indicator flex justify-center mt-4">
+                <div class="animate-spin rounded-full h-10 w-10 border-t-4 border-b-4 border-blue-500"></div>
+            </div>
+        </div>
     </div>
 
     <!-- Analysis spinner -->
@@ -33,26 +43,48 @@
 
 <!-- Event delegation for suggestion clicks -->
 <script>
-    // Listen for clicks on suggestion items (even after they are replaced by HTMX)
+    // Generic handler for both suggestion items and pick cards
     document.addEventListener('click', function(e) {
+        // Suggestions
         const item = e.target.closest('.suggestion-item');
-        if (!item) return;
+        if (item) {
+            const symbol = item.getAttribute('data-symbol');
+            if (!symbol) return;
+            document.getElementById('search-input').value = symbol.replace('.NS', '');
+            document.getElementById('search-results').innerHTML = '';
+            htmx.ajax('GET', '/analyze/?symbol=' + encodeURIComponent(symbol), {
+                target: '#analysis-results',
+                swap: 'innerHTML',
+                indicator: '#analysis-spinner'
+            });
+            return;
+        }
+        
+        // Top picks card
+        const pick = e.target.closest('.pick-card');
+        if (pick) {
+            const symbol = pick.getAttribute('data-symbol');
+            if (!symbol) return;
+            document.getElementById('search-input').value = symbol.replace('.NS', '');
+            document.getElementById('search-results').innerHTML = '';
+            htmx.ajax('GET', '/analyze/?symbol=' + encodeURIComponent(symbol), {
+                target: '#analysis-results',
+                swap: 'innerHTML',
+                indicator: '#analysis-spinner'
+            });
+            return;
+        }
+    });
 
-        const symbol = item.getAttribute('data-symbol');
-        if (!symbol) return;
-
-        // 1. Fill the search input with the ticker (without .NS)
-        document.getElementById('search-input').value = symbol.replace('.NS', '');
-
-        // 2. Clear the suggestion dropdown
-        document.getElementById('search-results').innerHTML = '';
-
-        // 3. Trigger HTMX to load the analysis cards
-        htmx.ajax('GET', '/analyze/?symbol=' + encodeURIComponent(symbol), {
-            target: '#analysis-results',
-            swap: 'innerHTML',
-            indicator: '#analysis-spinner'
-        });
+    // After analysis cards appear, hide the top picks section
+    document.addEventListener('htmx:afterSwap', function(evt) {
+        if (evt.detail.target.id === 'analysis-results') {
+            document.getElementById('search-results').innerHTML = '';
+            var picksSection = document.getElementById('top-picks-section');
+            if (picksSection) {
+                picksSection.style.display = 'none';
+            }
+        }
     });
 </script>
 {% endblock %}
