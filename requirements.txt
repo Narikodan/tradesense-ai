@@ -1,0 +1,8 @@
+Django>=4.2,<5.0
+djangorestframework==3.14.0  # only for potential future API, not used today
+pandas==2.1.1
+numpy==1.25.2
+yfinance==0.2.28
+ta==0.10.2
+plotly==5.17.0  # optional; we'll just use a placeholder
+redis==5.0.0  # if using Redis cache; default to database cache
