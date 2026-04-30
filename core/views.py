@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
 from django.core.cache import cache
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET
 from concurrent.futures import ThreadPoolExecutor
@@ -198,3 +198,122 @@ def analyze_stock(request):
 
 def home(request):
     return render(request, 'home.html')
+
+# --- NEW ASYNC ENDPOINTS ---
+
+@require_GET
+def api_context(request):
+    """
+    Returns Market Context panel HTML (Trend, Volatility, Liquidity, HTF Bias).
+    """
+    symbol = request.GET.get('symbol', '').strip()
+    if not symbol:
+        return HttpResponse('')
+        
+    yf_symbol = symbol if (symbol.endswith('.NS') or symbol.endswith('.BO')) else f"{symbol}.NS"
+    cache_key = f"context_{yf_symbol}"
+    
+    cached = cache.get(cache_key)
+    if cached:
+        return HttpResponse(cached)
+        
+    try:
+        df = yf.download(yf_symbol, period='1mo', interval='1d', progress=False)
+        if df.empty:
+            return HttpResponse('')
+            
+        # Simplify if MultiIndex
+        if isinstance(df.columns, pd.MultiIndex):
+            if yf_symbol in df.columns.get_level_values(1):
+                df = df.xs(yf_symbol, level=1, axis=1)
+            else:
+                df.columns = df.columns.droplevel(1)
+                
+        # Liquidity (Volume avg 10d vs cur)
+        avg_vol = df['Volume'].rolling(10).mean().iloc[-2]
+        cur_vol = df['Volume'].iloc[-1]
+        liquidity = "HIGH" if cur_vol > avg_vol * 1.2 else "LOW" if cur_vol < avg_vol * 0.8 else "NORMAL"
+        
+        # Volatility (ATR roughly) -> High-Low rolling vs cur
+        df['range'] = df['High'] - df['Low']
+        avg_range = df['range'].rolling(14).mean().iloc[-2]
+        cur_range = df['range'].iloc[-1]
+        volatility = "HIGH" if cur_range > avg_range * 1.5 else "LOW" if cur_range < avg_range * 0.6 else "NORMAL"
+        
+        # Trend
+        df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        last_close = df['Close'].iloc[-1]
+        ema21 = df['EMA21'].iloc[-1]
+        trend = "BULLISH" if last_close > ema21 else "BEARISH"
+        
+        # HTF Bias
+        from analysis.engine import SwingAnalyzer
+        swing = SwingAnalyzer(df).analyze()
+        htf_bias = swing.get('recommendation', 'AVOID')
+        
+        context_data = {
+            'trend': trend,
+            'volatility': volatility,
+            'liquidity': liquidity,
+            'htf_bias': htf_bias
+        }
+        
+        html = render(request, 'partials/context_badges.html', context_data).content.decode('utf-8')
+        cache.set(cache_key, html, 900) # 15 mins cache
+        return HttpResponse(html)
+    except Exception as e:
+        print(f"Error api_context: {e}")
+        return HttpResponse('')
+
+@require_GET
+def api_insights(request):
+    """
+    Combines HTF context + trade signal logic into one AI-like paragraph.
+    """
+    symbol = request.GET.get('symbol', '').strip()
+    if not symbol:
+        return HttpResponse('')
+        
+    yf_symbol = symbol if (symbol.endswith('.NS') or symbol.endswith('.BO')) else f"{symbol}.NS"
+    cache_key = f"insights_{yf_symbol}"
+    
+    cached = cache.get(cache_key)
+    if cached:
+        return HttpResponse(cached)
+        
+    try:
+        df = yf.download(yf_symbol, period='1mo', interval='1d', progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            if yf_symbol in df.columns.get_level_values(1):
+                df = df.xs(yf_symbol, level=1, axis=1)
+            else:
+                df.columns = df.columns.droplevel(1)
+        
+        df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        trend = "bullish trend" if df['Close'].iloc[-1] > df['EMA21'].iloc[-1] else "bearish trend"
+        
+        avg_vol = df['Volume'].rolling(10).mean().iloc[-2]
+        vol = "strong volume" if df['Volume'].iloc[-1] > avg_vol * 1.2 else "average volume"
+        
+        # We can fetch the recent recommendation from analyzer
+        from analysis.engine import SwingAnalyzer
+        swing = SwingAnalyzer(df).analyze()
+        htf_bias = swing.get('recommendation', 'AVOID')
+        
+        insight_text = f"Stock is currently in a {trend} showing {vol}. "
+            
+        if htf_bias == 'BUY':
+            insight_text += "Higher timeframe bias supports long entries on pullbacks."
+        elif htf_bias == 'SELL':
+            insight_text += "Higher timeframe bias is weak, short structures are favorable."
+        else:
+            insight_text += "Awaiting clearer structural breakout before major moves."
+            
+        context_data = {'insight': insight_text}
+        
+        html = render(request, 'partials/ai_insight.html', context_data).content.decode('utf-8')
+        cache.set(cache_key, html, 900)
+        return HttpResponse(html)
+    except Exception as e:
+        print(f"Error api_insights: {e}")
+        return HttpResponse('')

@@ -13,6 +13,16 @@
         </div>
     </div>
 
+    <!-- Context Badges Async -->
+    <div hx-get="/api/context/?symbol={{ symbol }}" hx-trigger="load" hx-swap="outerHTML">
+        <!-- Skeleton loader -->
+        <div class="flex justify-center gap-4 py-2 animate-pulse">
+            <div class="h-8 w-24 bg-gray-200 dark:bg-gray-700 rounded-full"></div>
+            <div class="h-8 w-24 bg-gray-200 dark:bg-gray-700 rounded-full"></div>
+            <div class="h-8 w-24 bg-gray-200 dark:bg-gray-700 rounded-full"></div>
+        </div>
+    </div>
+
     <!-- Two Cards -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
         <!-- Swing Card -->
@@ -52,8 +62,8 @@
                     </div>
                 </div>
 
-                <!-- v2: Trade Quality & Skip Trade Badge -->
-                {% if s.trade_quality %}
+                <!-- v2: Trade Quality & Skip Trade Badge (Only for active setups) -->
+                {% if s.trade_quality and s.recommendation != 'AVOID' %}
                 <div class="flex items-center gap-3 mb-4">
                     <span class="px-3 py-1 rounded-full text-xs font-bold uppercase
                         {% if s.trade_quality == 'A' %}bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300
@@ -198,7 +208,7 @@
                 </div>
 
                 <!-- v2: Trade Quality & Skip Trade Badge -->
-                {% if i.trade_quality %}
+                {% if i.trade_quality and i.recommendation != 'AVOID' %}
                 <div class="flex items-center gap-3 mb-4">
                     <span class="px-3 py-1 rounded-full text-xs font-bold uppercase
                         {% if i.trade_quality == 'A' %}bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300
@@ -306,5 +316,10 @@
                 {% endwith %}
             </div>
         </div>
+    </div>
+
+    <!-- AI Insight Async -->
+    <div hx-get="/api/insights/?symbol={{ symbol }}" hx-trigger="load" hx-swap="outerHTML">
+        <div class="animate-pulse bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl p-6 h-32 mt-8"></div>
     </div>
 </div>

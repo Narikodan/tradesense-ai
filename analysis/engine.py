@@ -398,6 +398,21 @@ class SwingAnalyzer:
         }
         ema21_val = round(self.ema21.iloc[-1], 2)
 
+        # ── Stop loss: structure-based with sanity guard ──────────────────────
+        if recommendation == "BUY":
+            stop_loss, _ = _structure_stop(self.df, "BUY", atr_val)
+            stop_loss = round(stop_loss, 2)
+            if stop_loss >= price:                       # must be below price
+                stop_loss = round(price - 1.5 * atr_val, 2)
+        elif recommendation == "SELL":
+            stop_loss, _ = _structure_stop(self.df, "SELL", atr_val)
+            stop_loss = round(stop_loss, 2)
+            if stop_loss <= price:                       # must be above price
+                stop_loss = round(price + 1.5 * atr_val, 2)
+        else:
+            stop_loss = round(price - atr_val, 2)
+
+        # ── v3: strategic entry ───────────────────────────────────────────────
         if recommendation in ("BUY", "SELL"):
             entry, entry_type, entry_note = _strategic_entry(
                 direction=recommendation,
@@ -405,8 +420,8 @@ class SwingAnalyzer:
                 atr_val=atr_val,
                 patterns=self.patterns,
                 levels=levels_dict,
-                vwap=None,          # SwingAnalyzer has no intraday VWAP
-                poc=None,           # POC is intraday only
+                vwap=None,   # SwingAnalyzer has no intraday VWAP
+                poc=None,    # POC is intraday only
                 ema21=ema21_val,
             )
         else:
@@ -414,20 +429,34 @@ class SwingAnalyzer:
             entry_type = "pullback"
             entry_note = "No actionable signal – monitoring only."
 
+        # ── Targets: always anchored to current PRICE, not entry ─────────────
+        # This is the key fix: targets represent where the market CAN go.
+        # Entry represents where the trader WAITS to get in.
+        # If we based targets on entry, a pullback entry would shrink reward
+        # to near-zero when entry < price on a BUY (entry is below market).
+        # We then do a final guard: if entry already cleared the first target
+        # (can happen on aggressive breakout entries), we project from entry.
         if recommendation == "BUY":
-            stop_loss = round(price - 1.5 * atr_val, 2)   # structure stop rebased later
-            target1   = bb_upper
-            target2   = round(bb_upper + atr_val, 2)
+            raw_t1 = bb_upper if bb_upper > price else round(price + atr_val, 2)
+            target1 = raw_t1
+            target2 = round(target1 + atr_val, 2)
+            if target1 <= entry:                         # entry leapfrogged T1
+                target1 = round(entry + atr_val, 2)
+                target2 = round(entry + 2 * atr_val, 2)
+                entry_note += " (Targets rebased above entry.)"
         elif recommendation == "SELL":
-            stop_loss = round(price + 1.5 * atr_val, 2)
-            target1   = bb_lower
-            target2   = round(bb_lower - atr_val, 2)
+            raw_t1 = bb_lower if bb_lower < price else round(price - atr_val, 2)
+            target1 = raw_t1
+            target2 = round(target1 - atr_val, 2)
+            if target1 >= entry:                         # entry fell below T1
+                target1 = round(entry - atr_val, 2)
+                target2 = round(entry - 2 * atr_val, 2)
+                entry_note += " (Targets rebased below entry.)"
         else:
-            stop_loss = round(price - atr_val, 2)
-            target1   = round(price + atr_val, 2)
-            target2   = round(price + 2 * atr_val, 2)
+            target1 = round(price + atr_val, 2)
+            target2 = round(price + 2 * atr_val, 2)
 
-        # All risk calculations anchored to strategic entry, not last close
+        # ── R:R anchored to strategic entry ───────────────────────────────────
         risk   = abs(entry - stop_loss)
         reward = abs(target1 - entry)
         rr     = round(reward / risk, 2) if risk > 0 else 0.0
@@ -445,8 +474,10 @@ class SwingAnalyzer:
             reasons.append("Low volatility – signal suppressed")
         reason = f"Score: {total_score:.2f}. " + ", ".join(reasons) + "."
 
-        # v2: trade quality (Upgrade 7)
-        trade_quality, skip_trade = _grade_trade(rr, confidence, atr_pct)
+        # v2: trade quality — now returns skip_reason too
+        trade_quality, skip_trade, skip_reason = _grade_trade(rr, confidence, atr_pct)
+        if skip_reason:
+            reason += f" Skip: {skip_reason}."
 
         return {
             # ── original keys ─────────────────────────────────────────────
@@ -480,9 +511,9 @@ class SwingAnalyzer:
 # Shared helpers used by IntradayAnalyzer
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _grade_trade(rr: float, confidence: int, atr_pct: float) -> tuple[str, bool]:
+def _grade_trade(rr: float, confidence: int, atr_pct: float) -> tuple[str, bool, str]:
     """
-    Assign a trade quality grade and skip flag.
+    Assign a trade quality grade, skip flag, and human-readable skip reason.
 
     Grade rules
     -----------
@@ -491,6 +522,8 @@ def _grade_trade(rr: float, confidence: int, atr_pct: float) -> tuple[str, bool]
     C : everything else
 
     skip_trade is True when grade is C or ATR% < 0.3 (dead market).
+    skip_reason is a non-empty string whenever skip_trade is True, so
+    the UI can explain the contradiction (e.g. high confidence + C grade).
     """
     if rr >= 2.5 and confidence >= 65:
         grade = "A"
@@ -498,8 +531,19 @@ def _grade_trade(rr: float, confidence: int, atr_pct: float) -> tuple[str, bool]
         grade = "B"
     else:
         grade = "C"
-    skip = grade == "C" or atr_pct < 0.3
-    return grade, skip
+
+    skip_reasons: list[str] = []
+    if grade == "C":
+        if rr < 1.5:
+            skip_reasons.append(f"R:R {rr:.2f} too low (min 1.5)")
+        if confidence < 55:
+            skip_reasons.append(f"confidence {confidence}% below threshold")
+    if atr_pct < 0.3:
+        skip_reasons.append(f"ATR% {atr_pct:.2f}% < 0.3% (dead market)")
+
+    skip        = bool(skip_reasons)
+    skip_reason = "; ".join(skip_reasons)
+    return grade, skip, skip_reason
 
 
 def _structure_stop(df: pd.DataFrame, direction: str, atr_val: float) -> tuple[float, bool]:
@@ -966,22 +1010,35 @@ class IntradayAnalyzer:
         resistance1 = round(max(or_high, pivot["R1"]), 2)
         resistance2 = round(pivot["R2"], 2)
 
-        # ── v2: structure-based stop loss (Upgrade 3) ─────────────────────
+        # ── v2: structure-based stop loss with sanity guard ──────────────────
         if recommendation == "BUY":
             stop_loss, _ = _structure_stop(self.df, "BUY", atr_val)
             stop_loss = round(stop_loss, 2)
-            if session_name == "opening":       # widen stop in volatile open
+            if session_name == "opening":
                 stop_loss = round(stop_loss - 0.2 * abs(price - stop_loss), 2)
-            target1 = round(pivot["R2"] if price > pivot["R1"] else pivot["R1"], 2)
+            if stop_loss >= price:                       # must be below price
+                stop_loss = round(price - 1.2 * atr_val, 2)
+            # Targets anchored to PRICE (where market can go), not entry
+            raw_t1 = pivot["R2"] if price > pivot["R1"] else pivot["R1"]
+            target1 = round(raw_t1, 2)
             target2 = round(pivot["R3"], 2)
+            if target1 <= price:                         # price already past T1
+                target1 = round(price + atr_val, 2)
+                target2 = round(price + 2 * atr_val, 2)
 
         elif recommendation == "SELL":
             stop_loss, _ = _structure_stop(self.df, "SELL", atr_val)
             stop_loss = round(stop_loss, 2)
             if session_name == "opening":
                 stop_loss = round(stop_loss + 0.2 * abs(stop_loss - price), 2)
-            target1 = round(pivot["S2"] if price < pivot["S1"] else pivot["S1"], 2)
+            if stop_loss <= price:                       # must be above price
+                stop_loss = round(price + 1.2 * atr_val, 2)
+            raw_t1 = pivot["S2"] if price < pivot["S1"] else pivot["S1"]
+            target1 = round(raw_t1, 2)
             target2 = round(pivot["S3"], 2)
+            if target1 >= price:
+                target1 = round(price - atr_val, 2)
+                target2 = round(price - 2 * atr_val, 2)
 
         else:
             atr_sl    = atr_val * 1.2
@@ -989,10 +1046,7 @@ class IntradayAnalyzer:
             target1   = round(price + atr_sl, 2)
             target2   = round(price + 2 * atr_sl, 2)
 
-        # ── v3: strategic entry (replaces raw `entry = price`) ────────────
-        # Build a levels dict using the pivot/ORB structural levels already computed.
-        # breakout_long  = the resistance price needs to clear for a bull breakout
-        # breakout_short = the support price needs to break for a bear breakdown
+        # ── v3: strategic entry ────────────────────────────────────────────────
         levels_dict = {
             "breakout_long":  resistance1,
             "breakout_short": support1,
@@ -1014,23 +1068,34 @@ class IntradayAnalyzer:
                 poc=poc_price,
                 ema21=ema21_val,
             )
+            # Final guard: entry must not have leapfrogged its own target
+            if recommendation == "BUY" and entry >= target1:
+                target1 = round(entry + atr_val, 2)
+                target2 = round(entry + 2 * atr_val, 2)
+                entry_note += " (Targets rebased above entry.)"
+            elif recommendation == "SELL" and entry <= target1:
+                target1 = round(entry - atr_val, 2)
+                target2 = round(entry - 2 * atr_val, 2)
+                entry_note += " (Targets rebased below entry.)"
         else:
             entry      = price
             entry_type = "pullback"
             entry_note = "No actionable signal – monitoring only."
 
-        # Rebase all risk/reward onto strategic entry (not last close)
+        # ── R:R anchored to strategic entry ───────────────────────────────────
         risk   = abs(entry - stop_loss)
         reward = abs(target1 - entry)
         rr     = round(reward / risk, 2) if risk > 0 else 0.0
 
-        # ── reason text ──────────────────────────────────────────────────
+        # ── reason text ──────────────────────────────────────────────────────
         reason_text = f"Score: {score:.2f}. " + ", ".join(reasons) + f". Session: {session_name}."
         if session_name == "closing":
             reason_text += " Late session – tighter stops."
 
-        # ── v2: trade quality (Upgrade 7) ────────────────────────────────
-        trade_quality, skip_trade = _grade_trade(rr, confidence, atr_pct)
+        # ── v2: trade quality — now with skip_reason ──────────────────────────
+        trade_quality, skip_trade, skip_reason = _grade_trade(rr, confidence, atr_pct)
+        if skip_reason:
+            reason_text += f" Skip: {skip_reason}."
 
         return {
             # ── original keys ─────────────────────────────────────────────

@@ -1,0 +1,47 @@
+<div class="mt-12 fade-in">
+    <h3 class="text-2xl font-bold mb-6 text-gray-800 dark:text-gray-100 flex items-center gap-2">
+        📰 Context-Aware News
+    </h3>
+    
+    {% if news %}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {% for item in news %}
+        <a href="{{ item.link }}" target="_blank" class="block bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-md hover:shadow-lg transition-all border border-gray-100 dark:border-gray-700 relative overflow-hidden group">
+            
+            <!-- Impact Tag -->
+            {% if item.impact != 'LOW' %}
+            <div class="absolute top-0 right-0 px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded-bl-lg
+                {% if item.impact == 'HIGH' %}bg-red-500 text-white
+                {% else %}bg-yellow-400 text-yellow-900{% endif %}">
+                {{ item.impact }} IMPACT
+            </div>
+            {% endif %}
+
+            <div class="flex flex-col h-full justify-between gap-4">
+                <h4 class="font-bold text-gray-800 dark:text-gray-100 leading-tight group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                    {{ item.title }}
+                </h4>
+                
+                <div class="flex items-center justify-between text-xs mt-auto pt-4 border-t border-gray-100 dark:border-gray-700">
+                    <div class="flex items-center gap-2 text-gray-500 dark:text-gray-400 font-medium">
+                        <span>{{ item.source }}</span> • <span>{{ item.time }}</span>
+                    </div>
+                    
+                    <!-- Sentiment Badge -->
+                    <span class="px-2.5 py-1 rounded-md font-bold uppercase tracking-wide
+                        {% if item.sentiment_label == 'bullish' %}bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-400
+                        {% elif item.sentiment_label == 'bearish' %}bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-400
+                        {% else %}bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400{% endif %}">
+                        {{ item.sentiment_label }}
+                    </span>
+                </div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="text-center bg-white dark:bg-gray-800 p-8 rounded-2xl shadow-md border border-gray-100 dark:border-gray-700">
+        <p class="text-gray-500 dark:text-gray-400">No relevant news found for this stock recently.</p>
+    </div>
+    {% endif %}
+</div>

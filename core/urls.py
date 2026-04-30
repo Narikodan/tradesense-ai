@@ -6,4 +6,6 @@ urlpatterns = [
     path('search/', views.search_suggestions, name='search_suggestions'),
     path('analyze/', views.analyze_stock, name='analyze_stock'),
     path('picks/', views.top_picks_view, name='top_picks'),   # new
+    path('api/context/', views.api_context, name='api_context'),
+    path('api/insights/', views.api_insights, name='api_insights'),
 ]
