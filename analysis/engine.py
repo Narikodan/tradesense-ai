@@ -1,6 +1,6 @@
 """
-TradeSense AI – Analysis Engine (v2 — enhanced)
-All original logic preserved; upgrades are additive only.
+TradeSense AI – Analysis Engine (v3 — strategic entry)
+All original logic preserved; each version is strictly additive.
 
 New capabilities (v2):
   1. Market-regime detector (ADX-14) + volatility filter + news-blackout flag
@@ -12,6 +12,36 @@ New capabilities (v2):
   7. Risk-of-ruin guard → trade_quality + skip_trade
   8. Extra candlestick patterns: inside_bar, morning_star, evening_star
      + new consolidating output flag
+
+New capabilities (v3) — strategic entry engine:
+  entry is no longer the last close.  It is computed by _strategic_entry()
+  which selects one of three entry styles based on context:
+
+  'breakout'  — price just cleared a structural level (ORB, pivot, prior S/R).
+                 Entry = that level +/- a 0.1×ATR confirmation buffer so we
+                 don't chase a candle that is already extended.
+
+  'pullback'  — price is trending but not at a breakout; wait for it to
+                 retrace to the nearest confluence zone (VWAP / POC / EMA21).
+                 Entry = that zone ± 0.05×ATR.  If price is already AT the
+                 zone (within 0.15×ATR), entry = current close.
+
+  'rejection' — a reversal candlestick pattern (hammer, engulf, star) fired
+                 at a known S/R level.  Entry = high of signal candle + 0.05×ATR
+                 for BUY, low of signal candle - 0.05×ATR for SELL.
+                 This is a confirmation trigger, not a market-order entry.
+
+  Priority order (highest confidence first):
+    1. rejection  — if a qualifying pattern is present at a S/R level
+    2. breakout   — if price is within 0.5×ATR of a structural breakout level
+    3. pullback   — default for all other trending signals
+
+  New output keys:  entry_type ('breakout' | 'pullback' | 'rejection')
+                    entry_note  (human-readable rationale for the entry level)
+
+  All risk/reward/stop calculations are rebased onto the strategic entry
+  price, not the last close, so the R:R ratio reflects what the trader
+  will actually experience when the order triggers.
 """
 
 from __future__ import annotations
@@ -346,30 +376,61 @@ class SwingAnalyzer:
         else:
             recommendation = "AVOID"
 
-        entry    = price
-        atr_sl   = 1.5 * atr_val
+        bb_upper = round(self.bb.bollinger_hband().iloc[-1], 2)
+        bb_lower = round(self.bb.bollinger_lband().iloc[-1], 2)
+
+        support1    = bb_lower
+        support2    = round(bb_lower - atr_val, 2)
+        resistance1 = bb_upper
+        resistance2 = round(bb_upper + atr_val, 2)
+
+        # ── v3: strategic entry ───────────────────────────────────────────────
+        # Build the levels dict that _strategic_entry() needs.
+        # For SwingAnalyzer the "structural level" for breakout is the BB band
+        # that price is approaching; support/resistance come from BB bands too.
+        levels_dict = {
+            "breakout_long":  resistance1,   # bull breakout above upper BB
+            "breakout_short": support1,       # bear breakdown below lower BB
+            "support":        support1,
+            "resistance":     resistance1,
+            "candle_high":    round(self.current["High"], 2),
+            "candle_low":     round(self.current["Low"],  2),
+        }
+        ema21_val = round(self.ema21.iloc[-1], 2)
+
+        if recommendation in ("BUY", "SELL"):
+            entry, entry_type, entry_note = _strategic_entry(
+                direction=recommendation,
+                price=price,
+                atr_val=atr_val,
+                patterns=self.patterns,
+                levels=levels_dict,
+                vwap=None,          # SwingAnalyzer has no intraday VWAP
+                poc=None,           # POC is intraday only
+                ema21=ema21_val,
+            )
+        else:
+            entry      = price
+            entry_type = "pullback"
+            entry_note = "No actionable signal – monitoring only."
 
         if recommendation == "BUY":
-            stop_loss = round(price - atr_sl, 2)
-            target1   = round(self.bb.bollinger_hband().iloc[-1], 2)
-            target2   = round(target1 + atr_val, 2)
+            stop_loss = round(price - 1.5 * atr_val, 2)   # structure stop rebased later
+            target1   = bb_upper
+            target2   = round(bb_upper + atr_val, 2)
         elif recommendation == "SELL":
-            stop_loss = round(price + atr_sl, 2)
-            target1   = round(self.bb.bollinger_lband().iloc[-1], 2)
-            target2   = round(target1 - atr_val, 2)
+            stop_loss = round(price + 1.5 * atr_val, 2)
+            target1   = bb_lower
+            target2   = round(bb_lower - atr_val, 2)
         else:
             stop_loss = round(price - atr_val, 2)
             target1   = round(price + atr_val, 2)
             target2   = round(price + 2 * atr_val, 2)
 
+        # All risk calculations anchored to strategic entry, not last close
         risk   = abs(entry - stop_loss)
         reward = abs(target1 - entry)
         rr     = round(reward / risk, 2) if risk > 0 else 0.0
-
-        support1    = round(self.bb.bollinger_lband().iloc[-1], 2)
-        support2    = round(support1 - atr_val, 2)
-        resistance1 = round(self.bb.bollinger_hband().iloc[-1], 2)
-        resistance2 = round(resistance1 + atr_val, 2)
 
         reasons = []
         reasons.append("Bullish trend" if trend > 0 else "Bearish trend")
@@ -391,9 +452,9 @@ class SwingAnalyzer:
             # ── original keys ─────────────────────────────────────────────
             "recommendation": recommendation,
             "confidence":     confidence,
-            "entry":          entry,
+            "entry":          round(entry, 2),
             "stop_loss":      stop_loss,
-            "sl_percent":     round((risk / entry) * 100, 2),
+            "sl_percent":     round((risk / entry) * 100, 2) if entry > 0 else 0.0,
             "target1":        target1,
             "target2":        target2,
             "rr":             rr,
@@ -405,10 +466,13 @@ class SwingAnalyzer:
             # ── v2 new keys ───────────────────────────────────────────────
             "trade_quality":  trade_quality,
             "skip_trade":     skip_trade,
-            "session":        "swing",        # daily frame has no intraday session
-            "htf_bias":       "n/a",          # no HTF for swing by default
+            "session":        "swing",
+            "htf_bias":       "n/a",
             "consolidating":  self.patterns["consolidating"],
-            "poc_price":      None,           # POC is intraday only
+            "poc_price":      None,
+            # ── v3 new keys ───────────────────────────────────────────────
+            "entry_type":     entry_type,
+            "entry_note":     entry_note,
         }
 
 
@@ -464,6 +528,161 @@ def _structure_stop(df: pd.DataFrame, direction: str, atr_val: float) -> tuple[f
         if abs(proposed_stop - price) > 2 * atr_val:
             return fallback_stop, True
         return proposed_stop, False
+
+
+def _strategic_entry(
+    direction: str,
+    price: float,
+    atr_val: float,
+    patterns: dict,
+    levels: dict,
+    vwap: Optional[float] = None,
+    poc: Optional[float] = None,
+    ema21: Optional[float] = None,
+) -> tuple[float, str, str]:
+    """
+    Compute a strategic limit-order entry price instead of the raw last close.
+
+    Parameters
+    ----------
+    direction : 'BUY' or 'SELL'
+    price     : last close (used as reference / fallback)
+    atr_val   : current ATR(14) value
+    patterns  : output of detect_candlestick_patterns()
+    levels    : dict with keys 'breakout_long', 'breakout_short',
+                'support', 'resistance' (all floats)
+    vwap      : current VWAP (optional)
+    poc       : intraday Point of Control (optional)
+    ema21     : current EMA-21 value (optional)
+
+    Returns
+    -------
+    (entry_price, entry_type, entry_note)
+
+    entry_type is one of: 'rejection', 'breakout', 'pullback'
+
+    Priority
+    --------
+    1. rejection  – reversal pattern fired at a S/R level  → confirmation trigger
+    2. breakout   – price within 0.5×ATR of a structural level → level + buffer
+    3. pullback   – trending but not at key level → nearest confluence zone
+    """
+    buf  = round(0.05 * atr_val, 2)   # confirmation buffer (tight)
+    half = round(0.15 * atr_val, 2)   # "already at zone" tolerance
+
+    # ── 1. REJECTION entry ────────────────────────────────────────────────────
+    #  Qualifying patterns: hammer / bull_engulf / morning_star (BUY)
+    #                       shooting_star / bear_engulf / evening_star (SELL)
+    if direction == "BUY":
+        reversal_pattern = (
+            patterns.get("hammer")
+            or patterns.get("bull_engulf")
+            or patterns.get("morning_star")
+        )
+        support_level = levels.get("support")
+        if reversal_pattern and support_level is not None:
+            # Only treat as rejection if candle is near the support level
+            near_support = abs(price - support_level) <= 0.4 * atr_val
+            if near_support:
+                # Entry = high of the signal candle + tiny buffer
+                # (levels dict carries current candle high via 'candle_high')
+                candle_high = levels.get("candle_high", price)
+                entry = round(candle_high + buf, 2)
+                note  = (
+                    f"Rejection BUY: enter above signal-candle high ({candle_high}) "
+                    f"+ {buf} buffer at support {support_level}. "
+                    f"Limit at {entry}."
+                )
+                return entry, "rejection", note
+
+    elif direction == "SELL":
+        reversal_pattern = (
+            patterns.get("shooting_star")
+            or patterns.get("bear_engulf")
+            or patterns.get("evening_star")
+        )
+        resistance_level = levels.get("resistance")
+        if reversal_pattern and resistance_level is not None:
+            near_resistance = abs(price - resistance_level) <= 0.4 * atr_val
+            if near_resistance:
+                candle_low = levels.get("candle_low", price)
+                entry = round(candle_low - buf, 2)
+                note  = (
+                    f"Rejection SELL: enter below signal-candle low ({candle_low}) "
+                    f"- {buf} buffer at resistance {resistance_level}. "
+                    f"Limit at {entry}."
+                )
+                return entry, "rejection", note
+
+    # ── 2. BREAKOUT entry ─────────────────────────────────────────────────────
+    #  Price has just broken (or is hugging) a structural level.
+    #  We enter just BEYOND the level, not wherever price currently is,
+    #  so the order only fills if the breakout continues.
+    if direction == "BUY":
+        brk = levels.get("breakout_long")
+        if brk is not None and price <= brk + 0.5 * atr_val:
+            entry = round(brk + buf, 2)
+            note  = (
+                f"Breakout BUY: limit just above structural level {brk} "
+                f"(+{buf} buffer). Current price {price}."
+            )
+            return entry, "breakout", note
+
+    elif direction == "SELL":
+        brk = levels.get("breakout_short")
+        if brk is not None and price >= brk - 0.5 * atr_val:
+            entry = round(brk - buf, 2)
+            note  = (
+                f"Breakout SELL: limit just below structural level {brk} "
+                f"(-{buf} buffer). Current price {price}."
+            )
+            return entry, "breakout", note
+
+    # ── 3. PULLBACK entry (default) ───────────────────────────────────────────
+    #  Find the nearest confluence zone: VWAP → POC → EMA21.
+    #  If price is already within half-ATR of that zone, use close.
+    #  Otherwise set a limit at the zone so we don't pay the extended price.
+    candidates: list[tuple[float, str]] = []
+    if vwap  is not None: candidates.append((vwap,  "VWAP"))
+    if poc   is not None: candidates.append((poc,   "POC"))
+    if ema21 is not None: candidates.append((ema21, "EMA21"))
+
+    if candidates:
+        # Pick zone closest to current price
+        zone_price, zone_name = min(candidates, key=lambda c: abs(c[0] - price))
+        at_zone = abs(price - zone_price) <= half
+
+        if direction == "BUY":
+            if at_zone:
+                entry = price
+                note  = (
+                    f"Pullback BUY: price already at {zone_name} ({zone_price}). "
+                    f"Enter at market ({price})."
+                )
+            else:
+                # Place limit at the zone; price must pull back to it
+                entry = round(zone_price + buf, 2)   # slightly above zone for fill certainty
+                note  = (
+                    f"Pullback BUY: wait for retracement to {zone_name} ({zone_price}). "
+                    f"Limit at {entry}."
+                )
+        else:  # SELL
+            if at_zone:
+                entry = price
+                note  = (
+                    f"Pullback SELL: price already at {zone_name} ({zone_price}). "
+                    f"Enter at market ({price})."
+                )
+            else:
+                entry = round(zone_price - buf, 2)
+                note  = (
+                    f"Pullback SELL: wait for rally back to {zone_name} ({zone_price}). "
+                    f"Limit at {entry}."
+                )
+        return entry, "pullback", note
+
+    # Absolute fallback: no zones available → use last close (safe, explicit)
+    return price, "pullback", f"Pullback entry at last close {price} (no confluence zones available)."
 
 
 def _compute_poc(df: pd.DataFrame, n_bins: int = 20) -> Optional[float]:
@@ -742,18 +961,22 @@ class IntradayAnalyzer:
         # ── v2: news blackout (Upgrade 1) ────────────────────────────────
         confidence = _news_blackout(confidence, now)
 
+        support1    = round(min(or_low,  pivot["S1"]), 2)
+        support2    = round(pivot["S2"], 2)
+        resistance1 = round(max(or_high, pivot["R1"]), 2)
+        resistance2 = round(pivot["R2"], 2)
+
         # ── v2: structure-based stop loss (Upgrade 3) ─────────────────────
         if recommendation == "BUY":
-            stop_loss, sl_fallback = _structure_stop(self.df, "BUY", atr_val)
+            stop_loss, _ = _structure_stop(self.df, "BUY", atr_val)
             stop_loss = round(stop_loss, 2)
-            # widen stop during opening session
-            if session_name == "opening":
+            if session_name == "opening":       # widen stop in volatile open
                 stop_loss = round(stop_loss - 0.2 * abs(price - stop_loss), 2)
             target1 = round(pivot["R2"] if price > pivot["R1"] else pivot["R1"], 2)
             target2 = round(pivot["R3"], 2)
 
         elif recommendation == "SELL":
-            stop_loss, sl_fallback = _structure_stop(self.df, "SELL", atr_val)
+            stop_loss, _ = _structure_stop(self.df, "SELL", atr_val)
             stop_loss = round(stop_loss, 2)
             if session_name == "opening":
                 stop_loss = round(stop_loss + 0.2 * abs(stop_loss - price), 2)
@@ -766,14 +989,40 @@ class IntradayAnalyzer:
             target1   = round(price + atr_sl, 2)
             target2   = round(price + 2 * atr_sl, 2)
 
-        risk   = abs(price - stop_loss)
-        reward = abs(target1 - price)
-        rr     = round(reward / risk, 2) if risk > 0 else 0.0
+        # ── v3: strategic entry (replaces raw `entry = price`) ────────────
+        # Build a levels dict using the pivot/ORB structural levels already computed.
+        # breakout_long  = the resistance price needs to clear for a bull breakout
+        # breakout_short = the support price needs to break for a bear breakdown
+        levels_dict = {
+            "breakout_long":  resistance1,
+            "breakout_short": support1,
+            "support":        support1,
+            "resistance":     resistance1,
+            "candle_high":    round(self.current["High"], 2),
+            "candle_low":     round(self.current["Low"],  2),
+        }
+        ema21_val = round(self.ema21.iloc[-1], 2)
 
-        support1    = min(or_low,  pivot["S1"])
-        support2    = pivot["S2"]
-        resistance1 = max(or_high, pivot["R1"])
-        resistance2 = pivot["R2"]
+        if recommendation in ("BUY", "SELL"):
+            entry, entry_type, entry_note = _strategic_entry(
+                direction=recommendation,
+                price=price,
+                atr_val=atr_val,
+                patterns=self.patterns,
+                levels=levels_dict,
+                vwap=round(float(self.df["VWAP"].iloc[-1]), 2),
+                poc=poc_price,
+                ema21=ema21_val,
+            )
+        else:
+            entry      = price
+            entry_type = "pullback"
+            entry_note = "No actionable signal – monitoring only."
+
+        # Rebase all risk/reward onto strategic entry (not last close)
+        risk   = abs(entry - stop_loss)
+        reward = abs(target1 - entry)
+        rr     = round(reward / risk, 2) if risk > 0 else 0.0
 
         # ── reason text ──────────────────────────────────────────────────
         reason_text = f"Score: {score:.2f}. " + ", ".join(reasons) + f". Session: {session_name}."
@@ -787,16 +1036,16 @@ class IntradayAnalyzer:
             # ── original keys ─────────────────────────────────────────────
             "recommendation": recommendation,
             "confidence":     confidence,
-            "entry":          price,
+            "entry":          round(entry, 2),
             "stop_loss":      stop_loss,
-            "sl_percent":     round((risk / price) * 100, 2) if price > 0 else 0.0,
+            "sl_percent":     round((risk / entry) * 100, 2) if entry > 0 else 0.0,
             "target1":        target1,
             "target2":        target2,
             "rr":             rr,
-            "support1":       round(support1, 2),
-            "support2":       round(support2, 2),
-            "resistance1":    round(resistance1, 2),
-            "resistance2":    round(resistance2, 2),
+            "support1":       support1,
+            "support2":       support2,
+            "resistance1":    resistance1,
+            "resistance2":    resistance2,
             "reason":         reason_text,
             "is_pm":          self.is_pm,
             # ── v2 new keys ───────────────────────────────────────────────
@@ -806,4 +1055,7 @@ class IntradayAnalyzer:
             "htf_bias":       htf_bias,
             "consolidating":  self.patterns["consolidating"],
             "poc_price":      poc_price,
+            # ── v3 new keys ───────────────────────────────────────────────
+            "entry_type":     entry_type,
+            "entry_note":     entry_note,
         }
