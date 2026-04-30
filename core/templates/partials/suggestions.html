@@ -1,10 +1,14 @@
 {% if symbols %}
+<div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl max-h-72 overflow-y-auto text-gray-900 dark:text-gray-100">
     {% for s in symbols %}
-        <div class="px-4 py-2 hover:bg-blue-50 dark:hover:bg-gray-700 cursor-pointer suggestion-item"
+        <div class="px-4 py-2 hover:bg-blue-50 dark:hover:bg-gray-700 cursor-pointer suggestion-item border-b border-gray-100 dark:border-gray-700 last:border-0"
              data-symbol="{{ s.ticker }}.NS">
             {{ s.ticker }} - {{ s.name }} ({{ s.exchange }})
         </div>
     {% endfor %}
+</div>
 {% else %}
-    <div class="px-4 py-2 text-gray-500 dark:text-gray-400">No matching symbols</div>
+<div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-2xl px-4 py-3 text-gray-500 dark:text-gray-400">
+    No matching symbols
+</div>
 {% endif %}

@@ -5999,6 +5999,13 @@
     "sector": ""
   },
   {
+    "symbol": "HEALTHX",
+    "name": "HEALTHX",
+    "exchange": "NSE",
+    "instrument_token": "",
+    "sector": ""
+  },
+  {
     "symbol": "HECPROJECT",
     "name": "HECPROJECT",
     "exchange": "NSE",
@@ -12756,13 +12763,6 @@
   {
     "symbol": "SASKEN",
     "name": "SASKEN",
-    "exchange": "NSE",
-    "instrument_token": "",
-    "sector": ""
-  },
-  {
-    "symbol": "SASTASUNDR",
-    "name": "SASTASUNDR",
     "exchange": "NSE",
     "instrument_token": "",
     "sector": ""

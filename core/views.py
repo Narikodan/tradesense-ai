@@ -123,8 +123,20 @@ def search_suggestions(request):
     query = request.GET.get('q', '').strip().upper()
     if not query or len(query) < 1:
         return render(request, 'partials/suggestions.html', {'symbols': []})
+
     symbols = get_all_symbols()
-    matches = [s for s in symbols if query in s['ticker'] or query in s['name'].upper()][:10]
+    # Split query into individual words; each must be found in ticker or name
+    words = query.split()
+    matches = []
+    for s in symbols:
+        ticker = s['ticker'].upper()
+        name = s['name'].upper()
+        # All words must be present in either the ticker or the name
+        if all(word in ticker or word in name for word in words):
+            matches.append(s)
+
+    # Limit to 20 results (up from 10)
+    matches = matches[:20]
     return render(request, 'partials/suggestions.html', {'symbols': matches})
 
 
