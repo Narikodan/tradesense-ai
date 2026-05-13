@@ -1,11 +1,16 @@
 <div class="fade-in space-y-8">
-    <!-- Stock Header -->
+    {% if disclaimer %}
+    <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+        {{ disclaimer }}
+    </div>
+    {% endif %}
+
     <div class="text-center">
         <h2 class="text-4xl font-extrabold tracking-tight">{{ name }}</h2>
         <div class="flex items-center justify-center gap-3 mt-2">
             <span class="text-lg font-semibold text-gray-600 dark:text-gray-400">{{ symbol }}</span>
             <span class="text-2xl font-bold">₹{% if ltp %}{{ ltp|floatformat:2 }}{% else %}N/A{% endif %}</span>
-            <span class="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-bold 
+            <span class="inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-bold
                 {% if pct_change >= 0 %}bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300
                 {% else %}bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300{% endif %}">
                 {% if pct_change >= 0 %}▲{% else %}▼{% endif %} {{ pct_change|floatformat:2 }}%
@@ -13,9 +18,7 @@
         </div>
     </div>
 
-    <!-- Context Badges Async -->
     <div hx-get="/api/context/?symbol={{ symbol }}" hx-trigger="load" hx-swap="outerHTML">
-        <!-- Skeleton loader -->
         <div class="flex justify-center gap-4 py-2 animate-pulse">
             <div class="h-8 w-24 bg-gray-200 dark:bg-gray-700 rounded-full"></div>
             <div class="h-8 w-24 bg-gray-200 dark:bg-gray-700 rounded-full"></div>
@@ -23,302 +26,11 @@
         </div>
     </div>
 
-    <!-- Two Cards -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <!-- Swing Card -->
-        <div class="relative bg-white dark:bg-gray-800 rounded-3xl shadow-2xl p-6 overflow-hidden transition-all duration-300 hover:scale-[1.02] 
-            {% if swing.recommendation == 'BUY' %} ring-2 ring-green-400/50 dark:ring-green-500/30 
-            {% elif swing.recommendation == 'SELL' %} ring-2 ring-red-400/50 dark:ring-red-500/30 
-            {% else %} ring-2 ring-yellow-400/50 dark:ring-yellow-500/30 {% endif %}">
-            <div class="absolute inset-0 opacity-10 bg-gradient-to-br from-teal-100 to-transparent dark:from-teal-800"></div>
-            <div class="relative z-10">
-                <div class="flex items-center justify-between mb-6">
-                    <h3 class="text-2xl font-bold bg-gradient-to-r from-teal-400 to-emerald-300 bg-clip-text text-transparent">Swing Setup</h3>
-                    <span class="text-xs font-semibold text-gray-500 dark:text-gray-400">Daily</span>
-                </div>
-                
-                {% with s=swing %}
-                <!-- Badge + Confidence bar -->
-                <div class="flex items-center gap-4 mb-6">
-                    <span class="px-4 py-1.5 rounded-full text-white text-sm font-bold uppercase tracking-wider shadow-lg 
-                        {% if s.recommendation == 'BUY' %}bg-green-500 shadow-green-500/20
-                        {% elif s.recommendation == 'SELL' %}bg-red-500 shadow-red-500/20
-                        {% else %}bg-yellow-500 shadow-yellow-500/20{% endif %}">
-                        {{ s.recommendation }}
-                    </span>
-                    <div class="flex-1">
-                        <div class="flex justify-between text-xs mb-1">
-                            <span class="text-gray-500 dark:text-gray-400">Confidence</span>
-                            <span class="font-bold">{{ s.confidence }}%</span>
-                        </div>
-                        <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                            <div class="h-full rounded-full transition-all duration-500 ease-out
-                                {% if s.confidence >= 70 %}bg-green-500
-                                {% elif s.confidence >= 40 %}bg-yellow-500
-                                {% else %}bg-red-500{% endif %}"
-                                style="width: {{ s.confidence }}%">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- v2: Trade Quality & Skip Trade Badge (Only for active setups) -->
-                {% if s.trade_quality and s.recommendation != 'AVOID' %}
-                <div class="flex items-center gap-3 mb-4">
-                    <span class="px-3 py-1 rounded-full text-xs font-bold uppercase
-                        {% if s.trade_quality == 'A' %}bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300
-                        {% elif s.trade_quality == 'B' %}bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300
-                        {% else %}bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300{% endif %}">
-                        Grade {{ s.trade_quality }}
-                    </span>
-                    {% if s.skip_trade %}
-                    <span class="px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">
-                        ⚠️ Skip Trade
-                    </span>
-                    {% endif %}
-                </div>
-                {% endif %}
-
-                <!-- v2: Session & HTF Bias (swing may not have them, but guard) -->
-                {% if s.session or s.htf_bias %}
-                <div class="flex flex-wrap gap-2 text-xs mb-4">
-                    {% if s.session and s.session != 'n/a' %}
-                    <span class="px-2 py-1 rounded bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300">
-                        Session: {{ s.session }}
-                    </span>
-                    {% endif %}
-                    {% if s.htf_bias and s.htf_bias != 'n/a' %}
-                    <span class="px-2 py-1 rounded bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300">
-                        HTF: {{ s.htf_bias }}
-                    </span>
-                    {% endif %}
-                </div>
-                {% endif %}
-
-                <!-- Price Zones -->
-                <div class="grid grid-cols-2 gap-4 mb-6">
-                    <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl text-center">
-                        <div class="text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">Entry</div>
-                        <div class="text-xl font-bold mt-1">₹{{ s.entry }}</div>
-                        {% if s.consolidating %}
-                        <div class="text-[10px] text-amber-600 dark:text-amber-400 mt-1">⚠️ Consolidating</div>
-                        {% endif %}
-                    </div>
-                    <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl text-center">
-                        <div class="text-xs uppercase tracking-wider text-red-500 dark:text-red-400">Stop Loss</div>
-                        <div class="text-xl font-bold mt-1">₹{{ s.stop_loss }}</div>
-                        <div class="text-xs text-red-500">-{{ s.sl_percent }}%</div>
-                    </div>
-                </div>
-
-                <!-- v2: POC Price (if available) -->
-                {% if s.poc_price %}
-                <div class="flex items-center justify-between px-4 py-2 bg-purple-50 dark:bg-purple-900/20 rounded-xl mb-4 text-sm">
-                    <span class="text-purple-600 dark:text-purple-400">POC (Volume Profile)</span>
-                    <span class="font-bold text-purple-700 dark:text-purple-300">₹{{ s.poc_price }}</span>
-                </div>
-                {% endif %}
-
-                <!-- Targets -->
-                <div class="grid grid-cols-2 gap-4 mb-6">
-                    <div class="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl text-center border border-green-100 dark:border-green-800">
-                        <div class="text-xs uppercase tracking-wider text-green-600 dark:text-green-400">Target 1</div>
-                        <div class="text-lg font-bold text-green-700 dark:text-green-300">₹{{ s.target1 }}</div>
-                    </div>
-                    <div class="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl text-center border border-green-100 dark:border-green-800">
-                        <div class="text-xs uppercase tracking-wider text-green-600 dark:text-green-400">Target 2</div>
-                        <div class="text-lg font-bold text-green-700 dark:text-green-300">₹{{ s.target2 }}</div>
-                    </div>
-                </div>
-
-                <!-- Risk:Reward -->
-                <div class="flex items-center justify-between px-4 py-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl mb-6">
-                    <span class="text-sm font-semibold text-gray-600 dark:text-gray-300">Risk:Reward</span>
-                    <span class="text-lg font-bold text-blue-600 dark:text-blue-400">
-                        {% if s.rr >= 2 %}🔥{% endif %} 1:{{ s.rr }}
-                    </span>
-                </div>
-
-                <!-- Key Levels -->
-                <div class="mb-6">
-                    <h4 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Key Levels</h4>
-                    <div class="grid grid-cols-2 gap-3">
-                        <div class="flex items-center justify-between p-2 bg-red-50 dark:bg-red-900/20 rounded-lg">
-                            <span class="text-xs text-red-600 dark:text-red-400">Support 1</span>
-                            <span class="text-sm font-bold text-red-700 dark:text-red-300">₹{{ s.support1 }}</span>
-                        </div>
-                        <div class="flex items-center justify-between p-2 bg-red-50 dark:bg-red-900/20 rounded-lg">
-                            <span class="text-xs text-red-600 dark:text-red-400">Support 2</span>
-                            <span class="text-sm font-bold text-red-700 dark:text-red-300">₹{{ s.support2 }}</span>
-                        </div>
-                        <div class="flex items-center justify-between p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                            <span class="text-xs text-green-600 dark:text-green-400">Resistance 1</span>
-                            <span class="text-sm font-bold text-green-700 dark:text-green-300">₹{{ s.resistance1 }}</span>
-                        </div>
-                        <div class="flex items-center justify-between p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                            <span class="text-xs text-green-600 dark:text-green-400">Resistance 2</span>
-                            <span class="text-sm font-bold text-green-700 dark:text-green-300">₹{{ s.resistance2 }}</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Reasoning -->
-                <div class="relative p-4 bg-teal-50 dark:bg-teal-900/30 rounded-xl border border-teal-100 dark:border-teal-800">
-                    <div class="absolute top-0 left-4 -mt-2 bg-teal-100 dark:bg-teal-800 text-teal-700 dark:text-teal-300 text-xs px-2 py-0.5 rounded-full">Analysis</div>
-                    <p class="text-sm mt-2">{{ s.reason }}</p>
-                </div>
-                {% endwith %}
-            </div>
-        </div>
-
-        <!-- Intraday Card -->
-        <div class="relative bg-white dark:bg-gray-800 rounded-3xl shadow-2xl p-6 overflow-hidden transition-all duration-300 hover:scale-[1.02] 
-            {% if intraday.recommendation == 'BUY' %} ring-2 ring-green-400/50 dark:ring-green-500/30 
-            {% elif intraday.recommendation == 'SELL' %} ring-2 ring-red-400/50 dark:ring-red-500/30 
-            {% else %} ring-2 ring-yellow-400/50 dark:ring-yellow-500/30 {% endif %}">
-            <div class="absolute inset-0 opacity-10 bg-gradient-to-br from-orange-100 to-transparent dark:from-orange-800"></div>
-            <div class="relative z-10">
-                <div class="flex items-center justify-between mb-6">
-                    <h3 class="text-2xl font-bold bg-gradient-to-r from-orange-400 to-amber-300 bg-clip-text text-transparent">Intraday Setup</h3>
-                    <span class="text-xs font-semibold text-gray-500 dark:text-gray-400">15min</span>
-                </div>
-                
-                {% with i=intraday %}
-                <div class="flex items-center gap-4 mb-6">
-                    <span class="px-4 py-1.5 rounded-full text-white text-sm font-bold uppercase tracking-wider shadow-lg 
-                        {% if i.recommendation == 'BUY' %}bg-green-500 shadow-green-500/20
-                        {% elif i.recommendation == 'SELL' %}bg-red-500 shadow-red-500/20
-                        {% else %}bg-yellow-500 shadow-yellow-500/20{% endif %}">
-                        {{ i.recommendation }}
-                    </span>
-                    <div class="flex-1">
-                        <div class="flex justify-between text-xs mb-1">
-                            <span class="text-gray-500 dark:text-gray-400">Confidence</span>
-                            <span class="font-bold">{{ i.confidence }}%</span>
-                        </div>
-                        <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                            <div class="h-full rounded-full transition-all duration-500 ease-out
-                                {% if i.confidence >= 70 %}bg-green-500
-                                {% elif i.confidence >= 40 %}bg-yellow-500
-                                {% else %}bg-red-500{% endif %}"
-                                style="width: {{ i.confidence }}%">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- v2: Trade Quality & Skip Trade Badge -->
-                {% if i.trade_quality and i.recommendation != 'AVOID' %}
-                <div class="flex items-center gap-3 mb-4">
-                    <span class="px-3 py-1 rounded-full text-xs font-bold uppercase
-                        {% if i.trade_quality == 'A' %}bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300
-                        {% elif i.trade_quality == 'B' %}bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300
-                        {% else %}bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300{% endif %}">
-                        Grade {{ i.trade_quality }}
-                    </span>
-                    {% if i.skip_trade %}
-                    <span class="px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">
-                        ⚠️ Skip Trade
-                    </span>
-                    {% endif %}
-                </div>
-                {% endif %}
-
-                <!-- v2: Session & HTF Bias (intraday always has session) -->
-                <div class="flex flex-wrap gap-2 text-xs mb-4">
-                    {% if i.session %}
-                    <span class="px-2 py-1 rounded 
-                        {% if i.session == 'opening' %}bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300
-                        {% elif i.session == 'closing' %}bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300
-                        {% else %}bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300{% endif %}">
-                        {{ i.session|title }} Session
-                    </span>
-                    {% endif %}
-                    {% if i.htf_bias %}
-                    <span class="px-2 py-1 rounded bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300">
-                        HTF: {{ i.htf_bias }}
-                    </span>
-                    {% endif %}
-                </div>
-
-                <div class="grid grid-cols-2 gap-4 mb-6">
-                    <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl text-center">
-                        <div class="text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">Entry</div>
-                        <div class="text-xl font-bold mt-1">₹{{ i.entry }}</div>
-                        {% if i.consolidating %}
-                        <div class="text-[10px] text-amber-600 dark:text-amber-400 mt-1">⚠️ Consolidating</div>
-                        {% endif %}
-                    </div>
-                    <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl text-center">
-                        <div class="text-xs uppercase tracking-wider text-red-500 dark:text-red-400">Stop Loss</div>
-                        <div class="text-xl font-bold mt-1">₹{{ i.stop_loss }}</div>
-                        <div class="text-xs text-red-500">-{{ i.sl_percent }}%</div>
-                    </div>
-                </div>
-
-                {% if i.poc_price %}
-                <div class="flex items-center justify-between px-4 py-2 bg-purple-50 dark:bg-purple-900/20 rounded-xl mb-4 text-sm">
-                    <span class="text-purple-600 dark:text-purple-400">POC (Volume Profile)</span>
-                    <span class="font-bold text-purple-700 dark:text-purple-300">₹{{ i.poc_price }}</span>
-                </div>
-                {% endif %}
-
-                <div class="grid grid-cols-2 gap-4 mb-6">
-                    <div class="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl text-center border border-green-100 dark:border-green-800">
-                        <div class="text-xs uppercase tracking-wider text-green-600 dark:text-green-400">Target 1</div>
-                        <div class="text-lg font-bold text-green-700 dark:text-green-300">₹{{ i.target1 }}</div>
-                    </div>
-                    <div class="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl text-center border border-green-100 dark:border-green-800">
-                        <div class="text-xs uppercase tracking-wider text-green-600 dark:text-green-400">Target 2</div>
-                        <div class="text-lg font-bold text-green-700 dark:text-green-300">₹{{ i.target2 }}</div>
-                    </div>
-                </div>
-
-                <div class="flex items-center justify-between px-4 py-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl mb-6">
-                    <span class="text-sm font-semibold text-gray-600 dark:text-gray-300">Risk:Reward</span>
-                    <span class="text-lg font-bold text-blue-600 dark:text-blue-400">
-                        {% if i.rr >= 2 %}🔥{% endif %} 1:{{ i.rr }}
-                    </span>
-                </div>
-
-                <div class="mb-6">
-                    <h4 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Key Levels</h4>
-                    <div class="grid grid-cols-2 gap-3">
-                        <div class="flex items-center justify-between p-2 bg-red-50 dark:bg-red-900/20 rounded-lg">
-                            <span class="text-xs text-red-600 dark:text-red-400">Support 1</span>
-                            <span class="text-sm font-bold text-red-700 dark:text-red-300">₹{{ i.support1 }}</span>
-                        </div>
-                        <div class="flex items-center justify-between p-2 bg-red-50 dark:bg-red-900/20 rounded-lg">
-                            <span class="text-xs text-red-600 dark:text-red-400">Support 2</span>
-                            <span class="text-sm font-bold text-red-700 dark:text-red-300">₹{{ i.support2 }}</span>
-                        </div>
-                        <div class="flex items-center justify-between p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                            <span class="text-xs text-green-600 dark:text-green-400">Resistance 1</span>
-                            <span class="text-sm font-bold text-green-700 dark:text-green-300">₹{{ i.resistance1 }}</span>
-                        </div>
-                        <div class="flex items-center justify-between p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
-                            <span class="text-xs text-green-600 dark:text-green-400">Resistance 2</span>
-                            <span class="text-sm font-bold text-green-700 dark:text-green-300">₹{{ i.resistance2 }}</span>
-                        </div>
-                    </div>
-                </div>
-
-                {% if i.is_pm %}
-                <div class="p-3 bg-yellow-100 dark:bg-yellow-900/30 rounded-xl text-yellow-700 dark:text-yellow-300 text-sm mb-4">
-                    ⏰ Late session – tighter stops recommended
-                </div>
-                {% endif %}
-
-                <div class="relative p-4 bg-orange-50 dark:bg-orange-900/30 rounded-xl border border-orange-100 dark:border-orange-800">
-                    <div class="absolute top-0 left-4 -mt-2 bg-orange-100 dark:bg-orange-800 text-orange-700 dark:text-orange-300 text-xs px-2 py-0.5 rounded-full">Analysis</div>
-                    <p class="text-sm mt-2">{{ i.reason }}</p>
-                </div>
-                {% endwith %}
-            </div>
-        </div>
+        {% include "partials/signal_card.html" with setup=swing title="Swing Setup" timeframe="Daily" accent="teal" %}
+        {% include "partials/signal_card.html" with setup=intraday title="Intraday Setup" timeframe="15min" accent="orange" %}
     </div>
 
-    <!-- AI Insight Async -->
     <div hx-get="/api/insights/?symbol={{ symbol }}" hx-trigger="load" hx-swap="outerHTML">
         <div class="animate-pulse bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl p-6 h-32 mt-8"></div>
     </div>

@@ -17,7 +17,7 @@
                 hover:shadow-2xl hover:-translate-y-1.5 hover:border-opacity-50
                 {% if pick.confidence >= 70 %} animate-pulse-border {% endif %}"
          data-symbol="{{ pick.symbol }}.NS"
-         {% if pick.recommendation == 'BUY' %}style="box-shadow: 0 4px 20px rgba(34,197,94,0.15);"{% elif pick.recommendation == 'SELL' %}style="box-shadow: 0 4px 20px rgba(239,68,68,0.15);"{% endif %}>
+         {% if pick.recommendation == 'BUY' %}style="box-shadow: 0 4px 20px rgba(34,197,94,0.15);"{% elif pick.recommendation == 'SHORT_SELL' or pick.recommendation == 'SELL' %}style="box-shadow: 0 4px 20px rgba(239,68,68,0.15);"{% endif %}>
         
         <!-- Top row -->
         <div class="flex justify-between items-start mb-4">
@@ -28,9 +28,9 @@
             <div class="flex flex-col items-end gap-1">
                 <span class="px-3 py-1 rounded-full text-white text-xs font-bold uppercase tracking-wide shadow-md
                     {% if pick.recommendation == 'BUY' %}bg-green-500 shadow-green-500/30
-                    {% elif pick.recommendation == 'SELL' %}bg-red-500 shadow-red-500/30
+                    {% elif pick.recommendation == 'SHORT_SELL' or pick.recommendation == 'SELL' %}bg-red-500 shadow-red-500/30
                     {% else %}bg-yellow-500 shadow-yellow-500/30{% endif %}">
-                    {{ pick.recommendation }}
+                    {% if pick.display_recommendation %}{{ pick.display_recommendation }}{% else %}{{ pick.recommendation }}{% endif %}
                 </span>
                 {% if pick.rr %}
                 <span class="text-xs text-blue-600 dark:text-blue-400 font-semibold">

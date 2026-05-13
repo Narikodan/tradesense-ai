@@ -47,6 +47,7 @@ New capabilities (v3) — strategic entry engine:
 from __future__ import annotations
 
 import math
+import datetime
 from typing import Optional
 
 import numpy as np
@@ -54,6 +55,9 @@ import pandas as pd
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator, MACD
 from ta.volatility import BollingerBands, AverageTrueRange
+
+from analysis.data import normalize_ohlcv
+from analysis.short_selling import StaticShortSellEligibility, ShortSellEligibilityService
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helper: ADX (no new pip packages – pure pandas/numpy)
@@ -108,10 +112,52 @@ def sigmoid_confidence(score: float) -> int:
 def compute_vwap(df: pd.DataFrame) -> pd.DataFrame:
     """Volume Weighted Average Price on the given DataFrame."""
     df = df.copy()
+    cumulative_volume = df["Volume"].cumsum().replace(0, np.nan)
     df["VWAP"] = (
         df["Volume"] * ((df["High"] + df["Low"] + df["Close"]) / 3)
-    ).cumsum() / df["Volume"].cumsum()
+    ).cumsum() / cumulative_volume
+    df["VWAP"] = df["VWAP"].ffill().fillna(df["Close"])
     return df
+
+
+def _empty_result(reason: str, *, session: str = "n/a", price: float = 0.0) -> dict:
+    price = round(float(price or 0), 2)
+    return {
+        "recommendation": "AVOID",
+        "confidence": 0,
+        "entry": price,
+        "stop_loss": price,
+        "sl_percent": 0.0,
+        "target1": price,
+        "target2": price,
+        "rr": 0.0,
+        "support1": price,
+        "support2": price,
+        "resistance1": price,
+        "resistance2": price,
+        "reason": reason,
+        "why_trade": [],
+        "why_avoid": [reason],
+        "invalidation": "No trade is valid until data quality improves.",
+        "position_size": {"shares": 0, "capital_at_risk": 0.0, "risk_per_share": 0.0, "note": reason},
+        "trade_quality": "SKIP",
+        "skip_trade": True,
+        "skip_reason": reason,
+        "market_regime": "unknown",
+        "liquidity": "unknown",
+        "session": session,
+        "htf_bias": "n/a",
+        "consolidating": False,
+        "poc_price": None,
+        "entry_type": "none",
+        "entry_note": "No actionable signal.",
+        "trade_side": "NONE",
+        "order_type_hint": "NO_ORDER",
+        "square_off_time": "15:15",
+        "short_eligible": False,
+        "execution_warning": "",
+        "display_recommendation": "AVOID",
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -225,18 +271,21 @@ def detect_candlestick_patterns(df: pd.DataFrame) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class SwingAnalyzer:
-    def __init__(self, df: pd.DataFrame) -> None:
-        # ── flatten MultiIndex (unchanged) ──────────────────────────────────
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = ["_".join(col).strip() for col in df.columns]
-            for col in df.columns:
-                if   "Close"  in col: df.rename(columns={col: "Close"},  inplace=True)
-                elif "Open"   in col: df.rename(columns={col: "Open"},   inplace=True)
-                elif "High"   in col: df.rename(columns={col: "High"},   inplace=True)
-                elif "Low"    in col: df.rename(columns={col: "Low"},    inplace=True)
-                elif "Volume" in col: df.rename(columns={col: "Volume"}, inplace=True)
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        *,
+        account_size: float | None = None,
+        risk_percent: float = 1.0,
+    ) -> None:
+        self.account_size = account_size
+        self.risk_percent = risk_percent
+        self.df, self.data_quality = normalize_ohlcv(df, min_candles=60, max_stale_days=7)
+        self.data_error = None if self.data_quality.ok else self.data_quality.reason
+        if self.data_error:
+            self.current = self.df.iloc[-1] if not self.df.empty else pd.Series(dtype=float)
+            return
 
-        self.df      = df.copy()
         self.current = self.df.iloc[-1]
         self.close   = self.df["Close"]
         self.volume  = self.df["Volume"]
@@ -266,11 +315,29 @@ class SwingAnalyzer:
         Used to suppress inappropriate signal types.
         """
         adx_val = self.adx.iloc[-1]
+        atr_pct = (self.atr.iloc[-1] / self.close.iloc[-1]) * 100 if self.close.iloc[-1] else 0
+        volume_avg = self.volume.rolling(20).mean().iloc[-1]
+        low_liquidity = pd.notna(volume_avg) and self.volume.iloc[-1] < 0.5 * volume_avg
+        if low_liquidity:
+            return "low_liquidity"
+        if atr_pct > 6:
+            return "high_volatility"
         if adx_val > 25:
             return "trending"
         if adx_val < 20:
             return "ranging"
         return "neutral"
+
+    def _liquidity_state(self) -> str:
+        vol_avg = self.vol_sma.iloc[-1]
+        vol_cur = self.current["Volume"]
+        if vol_cur <= 0:
+            return "missing"
+        if pd.notna(vol_avg) and vol_cur < 0.5 * vol_avg:
+            return "low"
+        if pd.notna(vol_avg) and vol_cur >= 1.2 * vol_avg:
+            return "strong"
+        return "normal"
 
     def _atr_pct_filter(self) -> bool:
         """
@@ -345,6 +412,10 @@ class SwingAnalyzer:
     # ── main analyze ─────────────────────────────────────────────────────────
 
     def analyze(self) -> dict:
+        if self.data_error:
+            price = self.current.get("Close", 0.0) if not self.df.empty else 0.0
+            return _empty_result(self.data_error, session="swing", price=price)
+
         trend    = self._trend_score()
         momentum = self._momentum_score()
         volume   = self._volume_confirmation()
@@ -354,9 +425,12 @@ class SwingAnalyzer:
 
         # v2: regime filter
         regime = self._market_regime()
+        liquidity = self._liquidity_state()
         if regime == "ranging" and abs(total_score) > 0.5:
             # suppress breakout signals in ranging market
             total_score *= 0.7
+        if regime in ("high_volatility", "low_liquidity"):
+            total_score *= 0.5
 
         # v2: sigmoid confidence (Upgrade 6)
         confidence = sigmoid_confidence(total_score)
@@ -461,23 +535,56 @@ class SwingAnalyzer:
         reward = abs(target1 - entry)
         rr     = round(reward / risk, 2) if risk > 0 else 0.0
 
+        why_trade = []
+        why_avoid = []
         reasons = []
         reasons.append("Bullish trend" if trend > 0 else "Bearish trend")
         reasons.append("Positive RSI"  if momentum > 0 else "Weak momentum")
+        if recommendation == "BUY" and trend > 0:
+            why_trade.append("Price structure is aligned above key moving averages.")
+        if recommendation == "SELL" and trend < 0:
+            why_trade.append("Price structure is aligned below key moving averages.")
+        if momentum > 0 and recommendation == "BUY":
+            why_trade.append("Momentum supports a long setup.")
+        if momentum < 0 and recommendation == "SELL":
+            why_trade.append("Momentum supports a short setup.")
         if volume >= 1.5:
             reasons.append("High volume")
+            why_trade.append("Volume is confirming participation.")
         if pattern > 0:
             reasons.append("Bullish pattern")
         elif pattern < 0:
             reasons.append("Bearish pattern")
         if low_vol:
             reasons.append("Low volatility – signal suppressed")
+            why_avoid.append("Volatility is too low for a clean swing setup.")
+        if regime == "ranging":
+            why_avoid.append("Market is ranging, so breakout follow-through is less reliable.")
+        if regime == "high_volatility":
+            why_avoid.append("ATR is unusually high; stops may be too wide.")
+        if liquidity in ("low", "missing"):
+            why_avoid.append("Liquidity/volume is weak or unavailable.")
         reason = f"Score: {total_score:.2f}. " + ", ".join(reasons) + "."
 
         # v2: trade quality — now returns skip_reason too
-        trade_quality, skip_trade, skip_reason = _grade_trade(rr, confidence, atr_pct)
+        trade_quality, skip_trade, skip_reason = _grade_trade(
+            rr,
+            confidence,
+            atr_pct,
+            sl_percent=round((risk / entry) * 100, 2) if entry > 0 else 0.0,
+            liquidity=liquidity,
+            regime=regime,
+        )
         if skip_reason:
             reason += f" Skip: {skip_reason}."
+            why_avoid.extend(skip_reason.split("; "))
+        if skip_trade:
+            recommendation = "AVOID"
+            confidence = min(confidence, 45)
+            trade_quality = "SKIP"
+
+        position_size = _position_size(entry, stop_loss, self.account_size, self.risk_percent)
+        invalidation = _invalidation_reason(recommendation, entry, stop_loss, regime)
 
         return {
             # ── original keys ─────────────────────────────────────────────
@@ -494,9 +601,16 @@ class SwingAnalyzer:
             "resistance1":    resistance1,
             "resistance2":    resistance2,
             "reason":         reason,
+            "why_trade":      why_trade,
+            "why_avoid":      why_avoid or (["No clean confluence across trend, momentum, volume, and risk."] if recommendation == "AVOID" else []),
+            "invalidation":   invalidation,
+            "position_size":  position_size,
             # ── v2 new keys ───────────────────────────────────────────────
             "trade_quality":  trade_quality,
             "skip_trade":     skip_trade,
+            "skip_reason":    skip_reason,
+            "market_regime":  regime,
+            "liquidity":      liquidity,
             "session":        "swing",
             "htf_bias":       "n/a",
             "consolidating":  self.patterns["consolidating"],
@@ -504,6 +618,12 @@ class SwingAnalyzer:
             # ── v3 new keys ───────────────────────────────────────────────
             "entry_type":     entry_type,
             "entry_note":     entry_note,
+            "trade_side":     "LONG" if recommendation == "BUY" else "SHORT" if recommendation == "SELL" else "NONE",
+            "order_type_hint": "BUY_STOP_LIMIT" if recommendation == "BUY" else "SELL_STOP_LIMIT" if recommendation == "SELL" else "NO_ORDER",
+            "square_off_time": None,
+            "short_eligible": False,
+            "execution_warning": "",
+            "display_recommendation": recommendation,
         }
 
 
@@ -511,39 +631,94 @@ class SwingAnalyzer:
 # Shared helpers used by IntradayAnalyzer
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _grade_trade(rr: float, confidence: int, atr_pct: float) -> tuple[str, bool, str]:
+def _grade_trade(
+    rr: float,
+    confidence: int,
+    atr_pct: float,
+    *,
+    sl_percent: float = 0.0,
+    liquidity: str = "normal",
+    regime: str = "neutral",
+    htf_bias: str = "n/a",
+    direction: str = "AVOID",
+) -> tuple[str, bool, str]:
     """
     Assign a trade quality grade, skip flag, and human-readable skip reason.
 
     Grade rules
     -----------
     A : rr >= 2.5 AND confidence >= 65
-    B : rr >= 1.5 AND confidence >= 55
+    B : rr >= 1.7 AND confidence >= 55
     C : everything else
 
-    skip_trade is True when grade is C or ATR% < 0.3 (dead market).
+    skip_trade is True when grade is C, ATR% is poor, liquidity is weak,
+    stop width is excessive, volatility is chaotic, or HTF bias conflicts.
     skip_reason is a non-empty string whenever skip_trade is True, so
     the UI can explain the contradiction (e.g. high confidence + C grade).
     """
     if rr >= 2.5 and confidence >= 65:
         grade = "A"
-    elif rr >= 1.5 and confidence >= 55:
+    elif rr >= 1.7 and confidence >= 55:
         grade = "B"
     else:
         grade = "C"
 
     skip_reasons: list[str] = []
     if grade == "C":
-        if rr < 1.5:
-            skip_reasons.append(f"R:R {rr:.2f} too low (min 1.5)")
+        if rr < 1.7:
+            skip_reasons.append(f"R:R {rr:.2f} too low (min 1.7)")
         if confidence < 55:
             skip_reasons.append(f"confidence {confidence}% below threshold")
     if atr_pct < 0.3:
         skip_reasons.append(f"ATR% {atr_pct:.2f}% < 0.3% (dead market)")
+    if atr_pct > 7:
+        skip_reasons.append(f"ATR% {atr_pct:.2f}% too high for disciplined sizing")
+    if sl_percent > 4.0:
+        skip_reasons.append(f"stop width {sl_percent:.2f}% too wide")
+    if liquidity in ("low", "missing"):
+        skip_reasons.append(f"liquidity is {liquidity}")
+    if regime == "high_volatility":
+        skip_reasons.append("market regime is high volatility")
+    if regime == "low_liquidity":
+        skip_reasons.append("market regime is low liquidity")
+    if htf_bias == "conflict" and direction in ("BUY", "SELL", "SHORT_SELL"):
+        skip_reasons.append("higher-timeframe bias conflicts")
 
     skip        = bool(skip_reasons)
     skip_reason = "; ".join(skip_reasons)
     return grade, skip, skip_reason
+
+
+def _position_size(
+    entry: float,
+    stop_loss: float,
+    account_size: float | None,
+    risk_percent: float,
+) -> dict:
+    risk_per_share = round(abs(entry - stop_loss), 2)
+    if not account_size or account_size <= 0 or risk_percent <= 0 or risk_per_share <= 0:
+        return {
+            "shares": 0,
+            "capital_at_risk": 0.0,
+            "risk_per_share": risk_per_share,
+            "note": "Provide account_size and risk_percent for position sizing.",
+        }
+    capital_at_risk = round(account_size * (risk_percent / 100), 2)
+    shares = int(capital_at_risk // risk_per_share)
+    return {
+        "shares": max(shares, 0),
+        "capital_at_risk": capital_at_risk,
+        "risk_per_share": risk_per_share,
+        "note": f"Risking {risk_percent:.2f}% of account.",
+    }
+
+
+def _invalidation_reason(direction: str, entry: float, stop_loss: float, regime: str) -> str:
+    if direction == "BUY":
+        return f"Long thesis invalidates below stop-loss {stop_loss}; reassess if regime turns {regime} with weak volume."
+    if direction in ("SELL", "SHORT_SELL"):
+        return f"Short thesis invalidates above stop-loss {stop_loss}; reassess if regime turns {regime} with bullish volume."
+    return "No trade is valid until trend, momentum, volume, structure, and risk/reward align."
 
 
 def _structure_stop(df: pd.DataFrame, direction: str, atr_val: float) -> tuple[float, bool]:
@@ -611,6 +786,7 @@ def _strategic_entry(
     2. breakout   – price within 0.5×ATR of a structural level → level + buffer
     3. pullback   – trending but not at key level → nearest confluence zone
     """
+    direction = "SELL" if direction == "SHORT_SELL" else direction
     buf  = round(0.05 * atr_val, 2)   # confirmation buffer (tight)
     half = round(0.15 * atr_val, 2)   # "already at zone" tolerance
 
@@ -729,15 +905,15 @@ def _strategic_entry(
     return price, "pullback", f"Pullback entry at last close {price} (no confluence zones available)."
 
 
-def _compute_poc(df: pd.DataFrame, n_bins: int = 20) -> Optional[float]:
+def _compute_poc(df: pd.DataFrame, n_bins: int = 20, now: Optional[pd.Timestamp] = None) -> Optional[float]:
     """
     Approximate intraday Point of Control via a 20-bin volume profile.
 
     Buckets the session's price range, sums volume per bin, and returns
     the midpoint of the highest-volume bin.  Returns None if insufficient data.
     """
-    today = pd.Timestamp.now(tz="Asia/Kolkata").date()
-    session = df[df.index.tz_convert("Asia/Kolkata").date == today] if df.index.tzinfo else df
+    today = (now or pd.Timestamp.now(tz="Asia/Kolkata")).date()
+    session = df[df.index.tz_convert("Asia/Kolkata").date == today] if getattr(df.index, "tz", None) else df
     if len(session) < 5:
         session = df  # fallback: use all available data
 
@@ -809,19 +985,29 @@ class IntradayAnalyzer:
         df:     pd.DataFrame,
         info:   dict,
         htf_df: Optional[pd.DataFrame] = None,   # v2: higher-timeframe (e.g. 1H)
+        account_size: float | None = None,
+        risk_percent: float = 0.5,
+        now: Optional[pd.Timestamp] = None,
+        short_eligibility_service: ShortSellEligibilityService | None = None,
+        late_short_cutoff: datetime.time = datetime.time(15, 0),
+        square_off_time: str = "15:15",
     ) -> None:
-        # ── flatten MultiIndex (unchanged) ──────────────────────────────────
-        self.df = df.copy()
-        if isinstance(self.df.columns, pd.MultiIndex):
-            self.df.columns = ["_".join(col).strip() for col in self.df.columns]
-            for col in self.df.columns:
-                if   "Close"  in col: self.df.rename(columns={col: "Close"},  inplace=True)
-                elif "Open"   in col: self.df.rename(columns={col: "Open"},   inplace=True)
-                elif "High"   in col: self.df.rename(columns={col: "High"},   inplace=True)
-                elif "Low"    in col: self.df.rename(columns={col: "Low"},    inplace=True)
-                elif "Volume" in col: self.df.rename(columns={col: "Volume"}, inplace=True)
-
+        self.account_size = account_size
+        self.risk_percent = risk_percent
+        self.now = now
+        self.late_short_cutoff = late_short_cutoff
+        self.square_off_time = square_off_time
+        self.df, self.data_quality = normalize_ohlcv(df, min_candles=30)
+        self.data_error = None if self.data_quality.ok else self.data_quality.reason
         self.info = info
+        self.symbol = self._resolve_symbol(info)
+        extra_shortable = info.get("shortable_symbols") or info.get("intraday_shortable_symbols")
+        self.short_eligibility_service = short_eligibility_service or StaticShortSellEligibility.from_settings(extra_shortable)
+        self.is_pm = False
+        if self.data_error:
+            self.current = self.df.iloc[-1] if not self.df.empty else pd.Series(dtype=float)
+            return
+
         if not isinstance(self.df.index, pd.DatetimeIndex):
             self.df.index = pd.to_datetime(self.df.index)
 
@@ -852,9 +1038,14 @@ class IntradayAnalyzer:
             self._htf_ema9  = EMAIndicator(htf_close, window=9).ema_indicator()
             self._htf_ema21 = EMAIndicator(htf_close, window=21).ema_indicator()
 
-        # is_pm kept for backward compatibility (now derived from session)
-        self.is_pm = False
         self.patterns = detect_candlestick_patterns(self.df)
+
+    def _resolve_symbol(self, info: dict) -> str:
+        for key in ("symbol", "underlyingSymbol", "quoteTypeSymbol", "shortName"):
+            value = info.get(key)
+            if value:
+                return str(value)
+        return ""
 
     # ── original helpers (unchanged) ─────────────────────────────────────────
 
@@ -865,7 +1056,7 @@ class IntradayAnalyzer:
         return compute_pivot_points(prev_high, prev_low, prev_close)
 
     def _opening_range(self) -> tuple[float, float]:
-        today      = pd.Timestamp.now(tz="Asia/Kolkata").date()
+        today      = (self.now or pd.Timestamp.now(tz="Asia/Kolkata")).date()
         today_data = self.df[self.df.index.date == today]
         first      = today_data.iloc[0] if len(today_data) >= 1 else self.df.iloc[0]
         return first["High"], first["Low"]
@@ -889,11 +1080,28 @@ class IntradayAnalyzer:
     def _market_regime(self) -> str:
         """Return 'trending', 'ranging', or 'neutral' based on ADX(14)."""
         adx_val = self.adx.iloc[-1]
+        atr_pct = (self.atr.iloc[-1] / self.close.iloc[-1]) * 100 if self.close.iloc[-1] else 0
+        liquidity = self._liquidity_state()
+        if liquidity in ("low", "missing"):
+            return "low_liquidity"
+        if atr_pct > 2.8:
+            return "high_volatility"
         if adx_val > 25:
             return "trending"
         if adx_val < 20:
             return "ranging"
         return "neutral"
+
+    def _liquidity_state(self) -> str:
+        vol_avg = self.vol_sma.iloc[-1]
+        vol_cur = self.current["Volume"]
+        if vol_cur <= 0:
+            return "missing"
+        if pd.notna(vol_avg) and vol_cur < 0.5 * vol_avg:
+            return "low"
+        if pd.notna(vol_avg) and vol_cur >= 1.2 * vol_avg:
+            return "strong"
+        return "normal"
 
     def _atr_pct_filter(self) -> bool:
         """
@@ -906,9 +1114,101 @@ class IntradayAnalyzer:
         p20 = atr_pct.rolling(50).quantile(0.20).iloc[-1]
         return float(atr_pct.iloc[-1]) >= float(p20)
 
+    def _late_for_new_short(self, now: pd.Timestamp) -> bool:
+        return now.time() >= self.late_short_cutoff
+
+    def _has_stale_intraday_data(self, now: pd.Timestamp) -> bool:
+        if not isinstance(self.df.index, pd.DatetimeIndex) or self.df.empty:
+            return True
+        last_ts = pd.Timestamp(self.df.index[-1])
+        if last_ts.tzinfo is None and now.tzinfo is not None:
+            last_ts = last_ts.tz_localize(now.tzinfo)
+        elif last_ts.tzinfo is not None and now.tzinfo is not None:
+            last_ts = last_ts.tz_convert(now.tzinfo)
+        elif last_ts.tzinfo is not None and now.tzinfo is None:
+            last_ts = last_ts.tz_localize(None)
+        return (now.normalize() - last_ts.normalize()).days > 1
+
+    def _short_confluence(
+        self,
+        *,
+        price: float,
+        vwap: float,
+        trend_bull: bool,
+        rsi_val: float,
+        volume_spike: bool,
+        support1: float,
+        resistance1: float,
+        or_low: float,
+        pivot: dict,
+        atr_val: float,
+        regime: str,
+        liquidity: str,
+        low_vol: bool,
+        htf_bias: str,
+        now: pd.Timestamp,
+    ) -> tuple[bool, str, str]:
+        checks: list[str] = []
+        failures: list[str] = []
+
+        if price < vwap:
+            checks.append("price below VWAP")
+        else:
+            failures.append("price is not below VWAP")
+
+        if not trend_bull:
+            checks.append("EMA9 below EMA21")
+        else:
+            failures.append("EMA9 is not below EMA21")
+
+        if rsi_val < 45:
+            checks.append("RSI weakness")
+        else:
+            failures.append("RSI is not weak enough")
+
+        breakdown = price < support1 or price < or_low or price < pivot["S1"]
+        near_resistance = abs(price - resistance1) <= 0.35 * atr_val or abs(price - vwap) <= 0.25 * atr_val
+        bearish_rejection = bool(
+            self.patterns.get("shooting_star")
+            or self.patterns.get("bear_engulf")
+            or self.patterns.get("evening_star")
+        )
+        rally_to_sell = near_resistance and bearish_rejection and price <= max(resistance1, vwap)
+
+        if breakdown and volume_spike:
+            checks.append("breakdown below S1/opening-range low with volume")
+        elif breakdown:
+            failures.append("breakdown lacks volume confirmation")
+        elif rally_to_sell:
+            checks.append("bearish rejection near VWAP/EMA/resistance")
+        else:
+            failures.append("no breakdown or resistance rejection")
+
+        if liquidity in ("low", "missing") or regime == "low_liquidity":
+            failures.append("liquidity is too weak for intraday short execution")
+        if regime == "high_volatility":
+            failures.append("volatility is too extreme for a disciplined short")
+        if low_vol:
+            failures.append("intraday volatility is too low")
+        if htf_bias == "conflict":
+            failures.append("higher-timeframe trend is bullish")
+        if self._has_stale_intraday_data(now):
+            failures.append("intraday data is stale")
+        if self._late_for_new_short(now):
+            failures.append(f"new short entries are disabled after {self.late_short_cutoff.strftime('%H:%M')} IST")
+
+        ok = len(checks) >= 4 and not failures
+        setup = "breakdown" if breakdown else "rally_to_sell" if rally_to_sell else "none"
+        reason = "; ".join(checks if ok else failures)
+        return ok, setup, reason
+
     # ── main analyze ─────────────────────────────────────────────────────────
 
     def analyze(self) -> dict:
+        if self.data_error:
+            price = self.current.get("Close", 0.0) if not self.df.empty else 0.0
+            return _empty_result(self.data_error, session="intraday", price=price)
+
         pivot         = self._pivot_points()
         or_high, or_low = self._opening_range()
         price         = round(self.current["Close"], 2)
@@ -916,7 +1216,7 @@ class IntradayAnalyzer:
         atr_pct       = round((atr_val / price) * 100, 3) if price > 0 else 0.0
 
         # ── v2: session (Upgrade 5) ───────────────────────────────────────
-        now                  = pd.Timestamp.now(tz="Asia/Kolkata")
+        now                  = self.now or pd.Timestamp.now(tz="Asia/Kolkata")
         session_name, time_mult = _ist_session(now)
         self.is_pm           = session_name == "closing"   # backward compat
 
@@ -927,6 +1227,7 @@ class IntradayAnalyzer:
         vol_cur          = self.current["Volume"]
         vol_avg          = self.vol_sma.iloc[-1]
         volume_spike     = pd.notna(vol_avg) and vol_cur >= 1.2 * vol_avg
+        liquidity        = self._liquidity_state()
 
         # ── original score logic ─────────────────────────────────────────
         score   = 0.0
@@ -958,7 +1259,7 @@ class IntradayAnalyzer:
             score -= 1
 
         # ── v2: POC score contribution (Upgrade 4) ────────────────────────
-        poc_price = _compute_poc(self.df)
+        poc_price = _compute_poc(self.df, now=now)
         if poc_price is not None and abs(price - poc_price) <= 0.3 * atr_val:
             score += 1.0
             reasons.append("Near POC")
@@ -973,6 +1274,9 @@ class IntradayAnalyzer:
             # suppress breakout signals in a ranging market
             score *= 0.7
             reasons.append("Regime: ranging – breakout suppressed")
+        elif regime in ("high_volatility", "low_liquidity"):
+            score *= 0.5
+            reasons.append(f"Regime: {regime.replace('_', ' ')} – signal suppressed")
 
         # ── v2: HTF confluence (Upgrade 2) ────────────────────────────────
         htf_mult, htf_bias = self._htf_confluence(trend_bull)
@@ -989,12 +1293,12 @@ class IntradayAnalyzer:
         if score > 1.5:
             recommendation = "BUY"
         elif score < -1.5:
-            recommendation = "SELL"
+            recommendation = "SHORT_SELL"
         else:
             recommendation = "AVOID"
 
         # ── v2: sigmoid confidence (Upgrade 6) ───────────────────────────
-        confidence = sigmoid_confidence(score)
+        confidence = sigmoid_confidence(abs(score) if recommendation == "SHORT_SELL" else score)
 
         # ── v2: volatility filter (Upgrade 1) ────────────────────────────
         low_vol = not self._atr_pct_filter()
@@ -1009,6 +1313,35 @@ class IntradayAnalyzer:
         support2    = round(pivot["S2"], 2)
         resistance1 = round(max(or_high, pivot["R1"]), 2)
         resistance2 = round(pivot["R2"], 2)
+
+        short_eligible = self.short_eligibility_service.is_shortable(self.symbol)
+        short_setup = "none"
+        short_reason = ""
+        if recommendation == "SHORT_SELL":
+            short_ok, short_setup, short_reason = self._short_confluence(
+                price=price,
+                vwap=vwap,
+                trend_bull=trend_bull,
+                rsi_val=rsi_val,
+                volume_spike=volume_spike,
+                support1=support1,
+                resistance1=resistance1,
+                or_low=or_low,
+                pivot=pivot,
+                atr_val=atr_val,
+                regime=regime,
+                liquidity=liquidity,
+                low_vol=low_vol,
+                htf_bias=htf_bias,
+                now=now,
+            )
+            if not short_eligible:
+                short_ok = False
+                short_reason = self.short_eligibility_service.reason(self.symbol)
+            if not short_ok:
+                reasons.append(f"Short skipped: {short_reason}")
+                recommendation = "AVOID"
+                confidence = min(confidence, 45)
 
         # ── v2: structure-based stop loss with sanity guard ──────────────────
         if recommendation == "BUY":
@@ -1026,7 +1359,7 @@ class IntradayAnalyzer:
                 target1 = round(price + atr_val, 2)
                 target2 = round(price + 2 * atr_val, 2)
 
-        elif recommendation == "SELL":
+        elif recommendation == "SHORT_SELL":
             stop_loss, _ = _structure_stop(self.df, "SELL", atr_val)
             stop_loss = round(stop_loss, 2)
             if session_name == "opening":
@@ -1057,7 +1390,7 @@ class IntradayAnalyzer:
         }
         ema21_val = round(self.ema21.iloc[-1], 2)
 
-        if recommendation in ("BUY", "SELL"):
+        if recommendation in ("BUY", "SHORT_SELL"):
             entry, entry_type, entry_note = _strategic_entry(
                 direction=recommendation,
                 price=price,
@@ -1073,10 +1406,20 @@ class IntradayAnalyzer:
                 target1 = round(entry + atr_val, 2)
                 target2 = round(entry + 2 * atr_val, 2)
                 entry_note += " (Targets rebased above entry.)"
-            elif recommendation == "SELL" and entry <= target1:
+            elif recommendation == "SHORT_SELL" and entry <= target1:
                 target1 = round(entry - atr_val, 2)
                 target2 = round(entry - 2 * atr_val, 2)
                 entry_note += " (Targets rebased below entry.)"
+            if recommendation == "SHORT_SELL":
+                if short_setup == "breakdown" and entry >= support1:
+                    entry = round(support1 - 0.05 * atr_val, 2)
+                    entry_note += " (Short entry kept below current support.)"
+                stop_loss = round(max(stop_loss, entry + 0.8 * atr_val), 2)
+                if target1 >= entry:
+                    target1 = round(entry - atr_val, 2)
+                    target2 = round(entry - 2 * atr_val, 2)
+                if target2 >= entry:
+                    target2 = round(entry - 2 * atr_val, 2)
         else:
             entry      = price
             entry_type = "pullback"
@@ -1088,14 +1431,71 @@ class IntradayAnalyzer:
         rr     = round(reward / risk, 2) if risk > 0 else 0.0
 
         # ── reason text ──────────────────────────────────────────────────────
+        why_trade = []
+        why_avoid = []
+        if recommendation == "BUY":
+            if trend_bull:
+                why_trade.append("EMA trend supports a long setup.")
+            if price_above_vwap:
+                why_trade.append("Price is holding above VWAP.")
+            if rsi_val > 55:
+                why_trade.append("RSI momentum is constructive.")
+            if volume_spike:
+                why_trade.append("Volume confirms participation.")
+        elif recommendation == "SHORT_SELL":
+            if not trend_bull:
+                why_trade.append("EMA trend supports a short setup.")
+            if not price_above_vwap:
+                why_trade.append("Price is below VWAP.")
+            if rsi_val < 45:
+                why_trade.append("RSI momentum is weak.")
+            if volume_spike:
+                why_trade.append("Volume confirms participation.")
+            if short_reason:
+                why_trade.append(f"Short setup: {short_reason}.")
+        if regime == "ranging":
+            why_avoid.append("Ranging regime reduces breakout reliability.")
+        if regime == "high_volatility":
+            why_avoid.append("High volatility makes stops wide and fills less dependable.")
+        if liquidity in ("low", "missing"):
+            why_avoid.append("Liquidity is too weak for clean intraday execution.")
+        if low_vol:
+            why_avoid.append("Intraday volatility is too low.")
+        if htf_bias == "conflict":
+            why_avoid.append("Higher-timeframe trend conflicts with the intraday signal.")
+        if short_reason and recommendation == "AVOID" and score < -1.5:
+            why_avoid.append(short_reason)
+
         reason_text = f"Score: {score:.2f}. " + ", ".join(reasons) + f". Session: {session_name}."
         if session_name == "closing":
             reason_text += " Late session – tighter stops."
 
         # ── v2: trade quality — now with skip_reason ──────────────────────────
-        trade_quality, skip_trade, skip_reason = _grade_trade(rr, confidence, atr_pct)
+        trade_quality, skip_trade, skip_reason = _grade_trade(
+            rr,
+            confidence,
+            atr_pct,
+            sl_percent=round((risk / entry) * 100, 2) if entry > 0 else 0.0,
+            liquidity=liquidity,
+            regime=regime,
+            htf_bias=htf_bias,
+            direction=recommendation,
+        )
         if skip_reason:
             reason_text += f" Skip: {skip_reason}."
+            why_avoid.extend(skip_reason.split("; "))
+        if skip_trade:
+            recommendation = "AVOID"
+            confidence = min(confidence, 45)
+            trade_quality = "SKIP"
+
+        position_size = _position_size(entry, stop_loss, self.account_size, self.risk_percent)
+        invalidation = _invalidation_reason(recommendation, entry, stop_loss, regime)
+        trade_side = "LONG" if recommendation == "BUY" else "SHORT" if recommendation == "SHORT_SELL" else "NONE"
+        order_type_hint = "BUY_STOP_LIMIT" if recommendation == "BUY" else "SELL_STOP_LIMIT" if recommendation == "SHORT_SELL" else "NO_ORDER"
+        execution_warning = ""
+        if recommendation == "SHORT_SELL":
+            execution_warning = f"Intraday short only; cover before {self.square_off_time} IST and verify broker margin/ban-list before execution."
 
         return {
             # ── original keys ─────────────────────────────────────────────
@@ -1112,10 +1512,17 @@ class IntradayAnalyzer:
             "resistance1":    resistance1,
             "resistance2":    resistance2,
             "reason":         reason_text,
+            "why_trade":      why_trade,
+            "why_avoid":      why_avoid or (["No clean confluence across trend, VWAP, momentum, volume, and risk."] if recommendation == "AVOID" else []),
+            "invalidation":   invalidation,
+            "position_size":  position_size,
             "is_pm":          self.is_pm,
             # ── v2 new keys ───────────────────────────────────────────────
             "trade_quality":  trade_quality,
             "skip_trade":     skip_trade,
+            "skip_reason":    skip_reason,
+            "market_regime":  regime,
+            "liquidity":      liquidity,
             "session":        session_name,
             "htf_bias":       htf_bias,
             "consolidating":  self.patterns["consolidating"],
@@ -1123,4 +1530,10 @@ class IntradayAnalyzer:
             # ── v3 new keys ───────────────────────────────────────────────
             "entry_type":     entry_type,
             "entry_note":     entry_note,
+            "trade_side":     trade_side,
+            "order_type_hint": order_type_hint,
+            "square_off_time": self.square_off_time,
+            "short_eligible": short_eligible,
+            "execution_warning": execution_warning,
+            "display_recommendation": "SHORT SELL" if recommendation == "SHORT_SELL" else recommendation,
         }

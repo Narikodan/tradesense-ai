@@ -21,7 +21,7 @@
         <!-- Top Intraday Picks Section -->
     <div id="top-picks-section" class="w-full mt-10">
         <h2 class="text-2xl font-bold text-center mb-6">🔥 Today's Top Intraday Picks</h2>
-        <div id="top-picks" hx-get="/picks/" hx-trigger="load delay:100ms" hx-indicator="#picks-spinner">
+        <div id="top-picks" hx-get="/picks/" hx-trigger="load delay:100ms, every 15s" hx-indicator="#picks-spinner">
             <div id="picks-spinner" class="htmx-indicator flex justify-center mt-4">
                 <div class="animate-spin rounded-full h-10 w-10 border-t-4 border-b-4 border-blue-500"></div>
             </div>

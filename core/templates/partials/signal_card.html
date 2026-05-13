@@ -1,0 +1,180 @@
+<div class="relative bg-white dark:bg-gray-800 rounded-3xl shadow-2xl p-6 overflow-hidden transition-all duration-300 hover:scale-[1.02]
+    {% if setup.recommendation == 'BUY' %} ring-2 ring-green-400/50 dark:ring-green-500/30
+    {% elif setup.recommendation == 'SHORT_SELL' or setup.recommendation == 'SELL' %} ring-2 ring-red-400/50 dark:ring-red-500/30
+    {% else %} ring-2 ring-yellow-400/50 dark:ring-yellow-500/30{% endif %}">
+    <div class="absolute inset-0 opacity-10 {% if accent == 'orange' %}bg-gradient-to-br from-orange-100 to-transparent dark:from-orange-800{% else %}bg-gradient-to-br from-teal-100 to-transparent dark:from-teal-800{% endif %}"></div>
+    <div class="relative z-10">
+        <div class="flex items-center justify-between mb-6">
+            <h3 class="text-2xl font-bold {% if accent == 'orange' %}bg-gradient-to-r from-orange-400 to-amber-300{% else %}bg-gradient-to-r from-teal-400 to-emerald-300{% endif %} bg-clip-text text-transparent">{{ title }}</h3>
+            <span class="text-xs font-semibold text-gray-500 dark:text-gray-400">{{ timeframe }}</span>
+        </div>
+
+        <div class="flex items-center gap-4 mb-6">
+            <span class="px-4 py-1.5 rounded-full text-white text-sm font-bold uppercase tracking-wider shadow-lg
+                {% if setup.recommendation == 'BUY' %}bg-green-500 shadow-green-500/20
+                {% elif setup.recommendation == 'SHORT_SELL' or setup.recommendation == 'SELL' %}bg-red-500 shadow-red-500/20
+                {% else %}bg-yellow-500 shadow-yellow-500/20{% endif %}">
+                {% if setup.display_recommendation %}{{ setup.display_recommendation }}{% else %}{{ setup.recommendation }}{% endif %}
+            </span>
+            <div class="flex-1">
+                <div class="flex justify-between text-xs mb-1">
+                    <span class="text-gray-500 dark:text-gray-400">Confidence</span>
+                    <span class="font-bold">{{ setup.confidence }}%</span>
+                </div>
+                <div class="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                    <div class="h-full rounded-full transition-all duration-500 ease-out
+                        {% if setup.confidence >= 70 %}bg-green-500
+                        {% elif setup.confidence >= 40 %}bg-yellow-500
+                        {% else %}bg-red-500{% endif %}"
+                        style="width: {{ setup.confidence }}%">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {% if setup.trade_quality and setup.recommendation != 'AVOID' %}
+        <div class="flex items-center gap-3 mb-4">
+            <span class="px-3 py-1 rounded-full text-xs font-bold uppercase
+                {% if setup.trade_quality == 'A' %}bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300
+                {% elif setup.trade_quality == 'B' %}bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300
+                {% else %}bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300{% endif %}">
+                Grade {{ setup.trade_quality }}
+            </span>
+            {% if setup.skip_trade %}
+            <span class="px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">
+                Skip Trade
+            </span>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <div class="flex flex-wrap gap-2 text-xs mb-4">
+            {% if setup.session and setup.session != 'n/a' %}
+            <span class="px-2 py-1 rounded
+                {% if setup.session == 'opening' %}bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300
+                {% elif setup.session == 'closing' %}bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300
+                {% elif setup.session == 'swing' %}bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300
+                {% else %}bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300{% endif %}">
+                {% if setup.session == 'swing' %}Session: swing{% else %}{{ setup.session|title }} Session{% endif %}
+            </span>
+            {% endif %}
+            {% if setup.htf_bias and setup.htf_bias != 'n/a' %}
+            <span class="px-2 py-1 rounded bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300">
+                HTF: {{ setup.htf_bias }}
+            </span>
+            {% endif %}
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 mb-6">
+            <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl text-center">
+                <div class="text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">{% if setup.recommendation == 'SHORT_SELL' %}Entry Sell Price{% else %}Entry{% endif %}</div>
+                <div class="text-xl font-bold mt-1">₹{{ setup.entry }}</div>
+                {% if setup.consolidating %}
+                <div class="text-[10px] text-amber-600 dark:text-amber-400 mt-1">Consolidating</div>
+                {% endif %}
+            </div>
+            <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl text-center">
+                <div class="text-xs uppercase tracking-wider text-red-500 dark:text-red-400">{% if setup.recommendation == 'SHORT_SELL' %}Buy Stop{% else %}Stop Loss{% endif %}</div>
+                <div class="text-xl font-bold mt-1">₹{{ setup.stop_loss }}</div>
+                <div class="text-xs text-red-500">-{{ setup.sl_percent }}%</div>
+            </div>
+        </div>
+
+        {% if setup.poc_price %}
+        <div class="flex items-center justify-between px-4 py-2 bg-purple-50 dark:bg-purple-900/20 rounded-xl mb-4 text-sm">
+            <span class="text-purple-600 dark:text-purple-400">POC (Volume Profile)</span>
+            <span class="font-bold text-purple-700 dark:text-purple-300">₹{{ setup.poc_price }}</span>
+        </div>
+        {% endif %}
+
+        <div class="grid grid-cols-2 gap-4 mb-6">
+            <div class="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl text-center border border-green-100 dark:border-green-800">
+                <div class="text-xs uppercase tracking-wider text-green-600 dark:text-green-400">{% if setup.recommendation == 'SHORT_SELL' %}Cover Target 1{% else %}Target 1{% endif %}</div>
+                <div class="text-lg font-bold text-green-700 dark:text-green-300">₹{{ setup.target1 }}</div>
+            </div>
+            <div class="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl text-center border border-green-100 dark:border-green-800">
+                <div class="text-xs uppercase tracking-wider text-green-600 dark:text-green-400">{% if setup.recommendation == 'SHORT_SELL' %}Cover Target 2{% else %}Target 2{% endif %}</div>
+                <div class="text-lg font-bold text-green-700 dark:text-green-300">₹{{ setup.target2 }}</div>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between px-4 py-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl mb-6">
+            <span class="text-sm font-semibold text-gray-600 dark:text-gray-300">Risk:Reward</span>
+            <span class="text-lg font-bold text-blue-600 dark:text-blue-400">1:{{ setup.rr }}</span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 mb-6 text-sm">
+            <div class="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                <div class="text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">Regime</div>
+                <div class="font-bold mt-1">{{ setup.market_regime|default:"n/a"|title }}</div>
+            </div>
+            <div class="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                <div class="text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">Liquidity</div>
+                <div class="font-bold mt-1">{{ setup.liquidity|default:"n/a"|title }}</div>
+            </div>
+        </div>
+
+        <div class="mb-6">
+            <h4 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">Key Levels</h4>
+            <div class="grid grid-cols-2 gap-3">
+                <div class="flex items-center justify-between p-2 bg-red-50 dark:bg-red-900/20 rounded-lg">
+                    <span class="text-xs text-red-600 dark:text-red-400">Support 1</span>
+                    <span class="text-sm font-bold text-red-700 dark:text-red-300">₹{{ setup.support1 }}</span>
+                </div>
+                <div class="flex items-center justify-between p-2 bg-red-50 dark:bg-red-900/20 rounded-lg">
+                    <span class="text-xs text-red-600 dark:text-red-400">Support 2</span>
+                    <span class="text-sm font-bold text-red-700 dark:text-red-300">₹{{ setup.support2 }}</span>
+                </div>
+                <div class="flex items-center justify-between p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
+                    <span class="text-xs text-green-600 dark:text-green-400">Resistance 1</span>
+                    <span class="text-sm font-bold text-green-700 dark:text-green-300">₹{{ setup.resistance1 }}</span>
+                </div>
+                <div class="flex items-center justify-between p-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
+                    <span class="text-xs text-green-600 dark:text-green-400">Resistance 2</span>
+                    <span class="text-sm font-bold text-green-700 dark:text-green-300">₹{{ setup.resistance2 }}</span>
+                </div>
+            </div>
+        </div>
+
+        {% if setup.is_pm %}
+        <div class="p-3 bg-yellow-100 dark:bg-yellow-900/30 rounded-xl text-yellow-700 dark:text-yellow-300 text-sm mb-4">
+            Late session - tighter stops.
+        </div>
+        {% endif %}
+
+        {% if setup.trade_side or setup.square_off_time or setup.execution_warning %}
+        <div class="grid grid-cols-2 gap-3 mb-6 text-sm">
+            <div class="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                <div class="text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">Side</div>
+                <div class="font-bold mt-1">{{ setup.trade_side|default:"NONE" }}</div>
+            </div>
+            <div class="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                <div class="text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">Square Off</div>
+                <div class="font-bold mt-1">{{ setup.square_off_time|default:"n/a" }}</div>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="relative p-4 {% if accent == 'orange' %}bg-orange-50 dark:bg-orange-900/30 border-orange-100 dark:border-orange-800{% else %}bg-teal-50 dark:bg-teal-900/30 border-teal-100 dark:border-teal-800{% endif %} rounded-xl border">
+            <div class="absolute top-0 left-4 -mt-2 {% if accent == 'orange' %}bg-orange-100 dark:bg-orange-800 text-orange-700 dark:text-orange-300{% else %}bg-teal-100 dark:bg-teal-800 text-teal-700 dark:text-teal-300{% endif %} text-xs px-2 py-0.5 rounded-full">Analysis</div>
+            <p class="text-sm mt-2">{{ setup.reason }}</p>
+            {% if setup.entry_note %}
+            <p class="text-xs mt-3 text-gray-600 dark:text-gray-300">{{ setup.entry_note }}</p>
+            {% endif %}
+            <p class="text-xs mt-3 text-gray-600 dark:text-gray-300">{{ setup.invalidation }}</p>
+            {% if setup.execution_warning %}
+            <p class="text-xs mt-3 text-red-600 dark:text-red-300">{{ setup.execution_warning }}</p>
+            {% endif %}
+            {% if setup.position_size %}
+            <p class="text-xs mt-2 text-gray-600 dark:text-gray-300">
+                Position size: {{ setup.position_size.shares }} shares; risk/share ₹{{ setup.position_size.risk_per_share }}. {{ setup.position_size.note }}
+            </p>
+            {% endif %}
+            {% if setup.why_avoid %}
+            <ul class="list-disc pl-5 mt-3 text-xs text-gray-700 dark:text-gray-300">
+                {% for item in setup.why_avoid %}<li>{{ item }}</li>{% endfor %}
+            </ul>
+            {% endif %}
+        </div>
+    </div>
+</div>
